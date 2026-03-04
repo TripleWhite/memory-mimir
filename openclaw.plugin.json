@@ -1,0 +1,43 @@
+{
+  "id": "memory-mimir",
+  "name": "memory-mimir",
+  "version": "0.1.0",
+  "description": "Mimir-powered long-term memory for OpenClaw",
+  "kind": "memory",
+  "entry": "src/index.ts",
+  "slots": ["plugins.slots.memory"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mimirUrl": {
+        "type": "string",
+        "description": "Mimir server URL (e.g. http://localhost:8766)"
+      },
+      "userId": {
+        "type": "string",
+        "description": "User ID for Mimir memory isolation"
+      },
+      "groupId": {
+        "type": "string",
+        "description": "Group ID for memory scoping"
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "description": "Auto-inject relevant memories before agent starts"
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "description": "Auto-capture conversations after agent ends"
+      },
+      "maxRecallItems": {
+        "type": "number",
+        "description": "Maximum number of memory items to recall"
+      },
+      "maxRecallTokens": {
+        "type": "number",
+        "description": "Maximum tokens for recalled memory context"
+      }
+    }
+  }
+}

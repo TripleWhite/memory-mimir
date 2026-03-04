@@ -1,0 +1,27 @@
+{
+  "name": "memory-mimir",
+  "version": "0.1.0",
+  "description": "Mimir-powered long-term memory for OpenClaw",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx src/test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.48"
+  }
+}
