@@ -468,6 +468,135 @@ function addYears(date: Date, years: number): Date {
   return d;
 }
 
+// ─── No-Key Mode: only register CLI for init/setup ──────────
+
+function registerCliOnly(
+  api: OpenClawPluginApi,
+  rawCfg: ReturnType<typeof resolveConfig>,
+) {
+  api.registerCli(
+    ({ program }) => {
+      const mimir = program
+        .command("mimir")
+        .description("Mimir memory plugin commands");
+
+      mimir
+        .command("init")
+        .description(
+          "Auto-register anonymous device and configure Mimir (zero-config)",
+        )
+        .option("--url <url>", "Mimir server URL", "https://api.allinmimir.com")
+        .action(async (...args: unknown[]) => {
+          const opts = (args[0] ?? {}) as Record<string, string>;
+          const mimirUrl = opts.url || rawCfg.mimirUrl;
+
+          console.log();
+          console.log("\x1b[2m  Connecting to Mimir gateway...\x1b[0m");
+
+          const initClient = new MimirClient({ url: mimirUrl });
+          let deviceData: { device_key: string; pairing_code: string };
+          try {
+            deviceData = await initClient.deviceInit();
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(
+              `\x1b[31m  ✗ Mimir gateway unreachable: ${msg}\x1b[0m`,
+            );
+            return;
+          }
+
+          const configPath = path.join(
+            os.homedir(),
+            ".openclaw",
+            "openclaw.json",
+          );
+          let ocConfig: Record<string, unknown> = {};
+          try {
+            const data = fs.readFileSync(configPath, "utf8");
+            ocConfig = JSON.parse(data) as Record<string, unknown>;
+          } catch {
+            // start fresh
+          }
+
+          const plugins = (ocConfig.plugins as Record<string, unknown>) ?? {};
+          const entries = (plugins.entries as Record<string, unknown>) ?? {};
+          const existing =
+            (entries["memory-mimir"] as Record<string, unknown>) ?? {};
+          const pluginCfg = (existing.config as Record<string, unknown>) ?? {};
+          const slots = (plugins.slots as Record<string, unknown>) ?? {};
+          const allow = ((plugins.allow as string[]) ?? []).filter(
+            (x: string) => x !== "memory-mimir",
+          );
+
+          const updatedConfig = {
+            ...ocConfig,
+            plugins: {
+              ...plugins,
+              enabled: true,
+              slots: { ...slots, memory: "memory-mimir" },
+              entries: {
+                ...entries,
+                "memory-mimir": {
+                  ...existing,
+                  enabled: true,
+                  hooks: { allowPromptInjection: true },
+                  config: {
+                    ...pluginCfg,
+                    apiKey: deviceData.device_key,
+                    mimirUrl,
+                    autoRecall: true,
+                    autoCapture: true,
+                  },
+                },
+              },
+              allow: [...allow, "memory-mimir"],
+            },
+          };
+
+          fs.mkdirSync(path.dirname(configPath), { recursive: true });
+          fs.writeFileSync(configPath, JSON.stringify(updatedConfig, null, 2));
+
+          console.log(`
+  \x1b[1;32m✅ Mimir activated! Memory engine online.\x1b[0m
+  \x1b[2m─────────────────────────────────────────\x1b[0m
+  \x1b[2m🔒 Anonymous channel assigned. Config written to openclaw.json.\x1b[0m
+  \x1b[2m💡 Restart OpenClaw — memories will upload in sandbox mode.\x1b[0m
+
+  \x1b[1m🌐 To manage your AI memory graph on the web:\x1b[0m
+  \x1b[34m🔗 1. Open: https://app.allinmimir.com/dashboard/pair\x1b[0m
+  \x1b[1;35m🔑 2. Enter pairing code: \x1b[43;30m ${deviceData.pairing_code} \x1b[0m
+
+  \x1b[2;3m(Skip this to stay in permanent anonymous sandbox mode)\x1b[0m
+`);
+        });
+
+      mimir
+        .command("setup")
+        .description("Configure memory-mimir with an existing API key")
+        .option("--api-key <key>", "Your Mimir API key (sk-mimir-...)")
+        .option("--url <url>", "Mimir server URL", "https://api.allinmimir.com")
+        .action(async (...args: unknown[]) => {
+          const opts = (args[0] ?? {}) as Record<string, string>;
+          const apiKey = opts["api-key"] || opts["apiKey"];
+          if (!apiKey) {
+            console.error("Error: --api-key is required.");
+            console.error(
+              "  Usage: openclaw mimir setup --api-key sk-mimir-xxx",
+            );
+            console.error(
+              "  Or run: openclaw mimir init  (for zero-config setup)",
+            );
+            return;
+          }
+          console.log(
+            "Run 'openclaw mimir setup --api-key ...' after the plugin is fully loaded.",
+          );
+        });
+    },
+    { commands: ["mimir"] },
+  );
+}
+
 // ─── Plugin Definition ──────────────────────────────────────
 
 const memoryMimirPlugin = {
@@ -509,6 +638,16 @@ const memoryMimirPlugin = {
 
   register(api: OpenClawPluginApi) {
     const rawCfg = resolveConfig(api.pluginConfig ?? {});
+
+    // If no apiKey configured, register CLI commands only (for 'mimir init')
+    if (!rawCfg.apiKey) {
+      api.logger.info(
+        "memory-mimir: no API key configured. Run 'openclaw mimir init' to set up.",
+      );
+      registerCliOnly(api, rawCfg);
+      return;
+    }
+
     const client = new MimirClient({
       url: rawCfg.mimirUrl,
       apiKey: rawCfg.apiKey,
@@ -712,16 +851,23 @@ const memoryMimirPlugin = {
             const pluginCfg =
               (existing.config as Record<string, unknown>) ?? {};
 
+            const slots = (plugins.slots as Record<string, unknown>) ?? {};
+            const allow = ((plugins.allow as string[]) ?? []).filter(
+              (x: string) => x !== "memory-mimir",
+            );
+
             const updatedConfig = {
               ...ocConfig,
               plugins: {
                 ...plugins,
                 enabled: true,
+                slots: { ...slots, memory: "memory-mimir" },
                 entries: {
                   ...entries,
                   "memory-mimir": {
                     ...existing,
                     enabled: true,
+                    hooks: { allowPromptInjection: true },
                     config: {
                       ...pluginCfg,
                       apiKey: deviceData.device_key,
@@ -731,6 +877,7 @@ const memoryMimirPlugin = {
                     },
                   },
                 },
+                allow: [...allow, "memory-mimir"],
               },
             };
 
@@ -821,17 +968,23 @@ const memoryMimirPlugin = {
               (entries["memory-mimir"] as Record<string, unknown>) ?? {};
             const pluginCfg =
               (existing.config as Record<string, unknown>) ?? {};
+            const slots = (plugins.slots as Record<string, unknown>) ?? {};
+            const setupAllow = ((plugins.allow as string[]) ?? []).filter(
+              (x: string) => x !== "memory-mimir",
+            );
 
             const updatedConfig = {
               ...ocConfig,
               plugins: {
                 ...plugins,
                 enabled: true,
+                slots: { ...slots, memory: "memory-mimir" },
                 entries: {
                   ...entries,
                   "memory-mimir": {
                     ...existing,
                     enabled: true,
+                    hooks: { allowPromptInjection: true },
                     config: {
                       ...pluginCfg,
                       apiKey,
@@ -843,6 +996,7 @@ const memoryMimirPlugin = {
                     },
                   },
                 },
+                allow: [...setupAllow, "memory-mimir"],
               },
             };
 

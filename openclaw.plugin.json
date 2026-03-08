@@ -9,12 +9,11 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["apiKey"],
     "properties": {
       "apiKey": {
         "type": "string",
         "secret": true,
-        "description": "Your Mimir API key from allinmimir.com/dashboard (sk-mimir-...)"
+        "description": "Mimir API key (device key mimir_dev_... or sk-mimir-...). Run 'openclaw mimir init' to get one."
       },
       "mimirUrl": {
         "type": "string",
