@@ -1,42 +1,53 @@
 {
   "id": "memory-mimir",
   "name": "memory-mimir",
-  "version": "0.1.0",
-  "description": "Mimir-powered long-term memory for OpenClaw",
+  "version": "1.0.0",
+  "description": "Long-term memory for OpenClaw powered by Mimir (graph + vector + BM25)",
   "kind": "memory",
-  "entry": "src/index.ts",
+  "entry": "dist/index.js",
   "slots": ["plugins.slots.memory"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
+    "required": ["apiKey"],
     "properties": {
+      "apiKey": {
+        "type": "string",
+        "secret": true,
+        "description": "Your Mimir API key from allinmimir.com/dashboard (sk-mimir-...)"
+      },
       "mimirUrl": {
         "type": "string",
-        "description": "Mimir server URL (e.g. http://localhost:8766)"
+        "default": "https://api.allinmimir.com",
+        "description": "Mimir server URL (leave empty for default)"
       },
       "userId": {
         "type": "string",
-        "description": "User ID for Mimir memory isolation"
+        "description": "User ID — auto-fetched from API key if left empty"
       },
       "groupId": {
         "type": "string",
-        "description": "Group ID for memory scoping"
+        "description": "Group ID — auto-fetched from API key if left empty"
       },
       "autoRecall": {
         "type": "boolean",
-        "description": "Auto-inject relevant memories before agent starts"
+        "default": true,
+        "description": "Auto-inject relevant memories before each conversation"
       },
       "autoCapture": {
         "type": "boolean",
-        "description": "Auto-capture conversations after agent ends"
+        "default": true,
+        "description": "Auto-save conversations to memory after each session"
       },
       "maxRecallItems": {
         "type": "number",
-        "description": "Maximum number of memory items to recall"
+        "default": 8,
+        "description": "Maximum number of memory items to inject per conversation"
       },
       "maxRecallTokens": {
         "type": "number",
-        "description": "Maximum tokens for recalled memory context"
+        "default": 500,
+        "description": "Maximum token budget for injected memories"
       }
     }
   }

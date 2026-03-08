@@ -5,10 +5,58 @@
  * as a full long-term memory backend (graph + vector + BM25).
  */
 
+import * as crypto from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 import { Type } from "@sinclair/typebox";
 import { MimirClient, MimirError } from "./mimir-client.js";
 import { formatSearchResults } from "./formatter.js";
 import { migrate, hasExistingData, hasLocalMemories } from "./migration.js";
+
+// ─── Capture state persistence (survives process restarts) ──
+
+interface CaptureState {
+  /** SHA-256 hashes (truncated to 16 hex chars) of already-ingested messages. */
+  ingestedHashes: string[];
+}
+
+const CAPTURE_STATE_DIR = path.join(os.homedir(), ".openclaw");
+const CAPTURE_STATE_FILE = path.join(
+  CAPTURE_STATE_DIR,
+  "memory-mimir-capture.json",
+);
+
+function loadCaptureState(): CaptureState {
+  try {
+    const data = fs.readFileSync(CAPTURE_STATE_FILE, "utf8");
+    const parsed = JSON.parse(data);
+    if (Array.isArray(parsed.ingestedHashes)) {
+      return { ingestedHashes: parsed.ingestedHashes as string[] };
+    }
+  } catch {
+    // File doesn't exist or is corrupt — start fresh.
+  }
+  return { ingestedHashes: [] };
+}
+
+function saveCaptureState(state: CaptureState): void {
+  try {
+    fs.mkdirSync(CAPTURE_STATE_DIR, { recursive: true });
+    fs.writeFileSync(CAPTURE_STATE_FILE, JSON.stringify(state));
+  } catch {
+    // Best-effort — don't crash if write fails.
+  }
+}
+
+/** Stable hash for a parsed message — used to skip already-ingested messages. */
+function hashMsg(role: string, content: string): string {
+  return crypto
+    .createHash("sha256")
+    .update(role + "\x00" + content)
+    .digest("hex")
+    .slice(0, 16);
+}
 
 // ─── Types (mirroring OpenClaw plugin-sdk) ──────────────────
 
@@ -61,6 +109,7 @@ interface CommanderCommand {
 
 interface PluginConfig {
   readonly mimirUrl: string;
+  readonly apiKey: string;
   readonly userId: string;
   readonly groupId: string;
   readonly autoRecall: boolean;
@@ -74,18 +123,11 @@ function resolveConfig(pluginConfig: Record<string, unknown>): PluginConfig {
     mimirUrl:
       (pluginConfig.mimirUrl as string) ??
       process.env.MIMIR_URL ??
-      "http://localhost:8766",
-    userId:
-      (pluginConfig.userId as string) ??
-      process.env.MIMIR_USER_ID ??
-      process.env.USER ??
-      "default",
+      "https://api.allinmimir.com",
+    apiKey: (pluginConfig.apiKey as string) ?? process.env.MIMIR_API_KEY ?? "",
+    userId: (pluginConfig.userId as string) ?? process.env.MIMIR_USER_ID ?? "",
     groupId:
-      (pluginConfig.groupId as string) ??
-      process.env.MIMIR_GROUP_ID ??
-      process.env.MIMIR_USER_ID ??
-      process.env.USER ??
-      "default",
+      (pluginConfig.groupId as string) ?? process.env.MIMIR_GROUP_ID ?? "",
     autoRecall:
       (pluginConfig.autoRecall as boolean) ??
       process.env.MIMIR_AUTO_RECALL !== "false",
@@ -261,6 +303,50 @@ function hasCJK(text: string): boolean {
   );
 }
 
+/**
+ * Extract plain text from a message content block (string or array).
+ * Handles mixed content: text, tool_use, tool_result, image, document.
+ * - text blocks: included as-is
+ * - tool_use: "[工具: name(args)]" so we know what was invoked
+ * - tool_result: recursively extract text (web fetch results, file reads, etc.)
+ * - image: "[图片]" placeholder — OpenClaw's reply will describe it
+ * - document: "[文档]" placeholder
+ */
+export function extractMessageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  const parts: string[] = [];
+  for (const block of content as Array<Record<string, unknown>>) {
+    if (!block || typeof block !== "object") continue;
+    switch (block.type) {
+      case "text":
+        if (typeof block.text === "string") parts.push(block.text);
+        break;
+      case "tool_result": {
+        // Recursively extract nested text (e.g. WebFetch, Read results)
+        const inner = extractMessageText(block.content);
+        if (inner) parts.push(inner);
+        break;
+      }
+      case "tool_use":
+        // Record which tool was called so context isn't lost
+        if (typeof block.name === "string") {
+          const args = block.input ? JSON.stringify(block.input) : "";
+          parts.push(`[工具: ${block.name}(${args})]`);
+        }
+        break;
+      case "image":
+        parts.push("[图片]");
+        break;
+      case "document":
+        parts.push("[文档]");
+        break;
+    }
+  }
+  return parts.filter(Boolean).join("\n");
+}
+
 /** Extract searchable topics from user message — pure heuristic, no LLM.
  *  For CJK text: pass first 200 chars directly (server has LLMTranslator + RuleAnalyzer).
  *  For English: extract up to 8 non-stop-word tokens.
@@ -422,94 +508,39 @@ const memoryMimirPlugin = {
   },
 
   register(api: OpenClawPluginApi) {
-    const cfg = resolveConfig(api.pluginConfig ?? {});
-    const client = new MimirClient({ url: cfg.mimirUrl });
+    const rawCfg = resolveConfig(api.pluginConfig ?? {});
+    const client = new MimirClient({
+      url: rawCfg.mimirUrl,
+      apiKey: rawCfg.apiKey,
+    });
 
-    api.logger.info(
-      `memory-mimir: registered (user: ${cfg.userId}, server: ${cfg.mimirUrl})`,
-    );
+    // Resolved config — userId/groupId may be filled in after /api/v1/me lookup
+    let cfg = rawCfg;
+
+    // If apiKey is set but userId is empty, auto-fetch from /api/v1/me
+    if (rawCfg.apiKey && !rawCfg.userId) {
+      client
+        .me()
+        .then((me) => {
+          cfg = { ...rawCfg, userId: me.user_id, groupId: me.group_id };
+          api.logger.info(
+            `memory-mimir: authenticated as ${me.display_name} (user: ${me.user_id}, server: ${rawCfg.mimirUrl})`,
+          );
+        })
+        .catch((err) => {
+          api.logger.warn(
+            `memory-mimir: failed to fetch identity from /api/v1/me: ${String(err)}`,
+          );
+        });
+    } else {
+      api.logger.info(
+        `memory-mimir: registered (user: ${rawCfg.userId}, server: ${rawCfg.mimirUrl})`,
+      );
+    }
 
     // ════════════════════════════════════════════════════════
     // Tools
     // ════════════════════════════════════════════════════════
-
-    api.registerTool(
-      {
-        name: "mimir_search",
-        label: "Mimir Search",
-        description:
-          "Search long-term memory for past conversations, facts, entities, and relationships. " +
-          "Use when the user asks about past events, people, or previously discussed topics.",
-        parameters: Type.Object({
-          query: Type.String({ description: "The search query" }),
-          types: Type.Optional(
-            Type.String({
-              description:
-                "Comma-separated memory types: episode,entity,relation,event_log,foresight. Default: all.",
-            }),
-          ),
-          startTime: Type.Optional(
-            Type.String({
-              description:
-                "Filter results after this time (ISO 8601, e.g. 2026-02-25T00:00:00Z).",
-            }),
-          ),
-          endTime: Type.Optional(
-            Type.String({
-              description:
-                "Filter results before this time (ISO 8601, e.g. 2026-03-04T00:00:00Z).",
-            }),
-          ),
-        }),
-        async execute(_toolCallId: string, params: Record<string, unknown>) {
-          const query = params.query as string;
-          const typesStr = params.types as string | undefined;
-          const memoryTypes =
-            typesStr?.split(",").map((t) => t.trim()) ?? undefined;
-          const startTime = params.startTime as string | undefined;
-          const endTime = params.endTime as string | undefined;
-
-          try {
-            const results = await client.search(cfg.userId, query, {
-              groupId: cfg.groupId,
-              memoryTypes,
-              topK: 10,
-              retrieveMethod: "agentic",
-              startTime,
-              endTime,
-            });
-
-            if (results.results.length === 0) {
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: "No memories found matching your query.",
-                  },
-                ],
-                details: { count: 0 },
-              };
-            }
-
-            const formatted = formatSearchResults(results, {
-              maxItems: 10,
-              maxChars: 4000,
-            });
-            return {
-              content: [{ type: "text", text: formatted }],
-              details: { count: results.results.length },
-            };
-          } catch (err) {
-            const msg = err instanceof MimirError ? err.message : String(err);
-            return {
-              content: [{ type: "text", text: `Memory search failed: ${msg}` }],
-              details: { error: msg },
-            };
-          }
-        },
-      },
-      { name: "mimir_search" },
-    );
 
     api.registerTool(
       {
@@ -629,32 +660,108 @@ const memoryMimirPlugin = {
 
         mimir
           .command("setup")
-          .description("Show Mimir configuration and test connectivity")
-          .action(async () => {
-            console.log(`Mimir Memory Plugin v0.1.0`);
-            console.log(`──────────────────────────`);
-            console.log(`Server URL:   ${cfg.mimirUrl}`);
-            console.log(`User ID:      ${cfg.userId}`);
-            console.log(`Group ID:     ${cfg.groupId}`);
-            console.log(
-              `Auto-recall:  ${cfg.autoRecall ? "enabled" : "disabled"}`,
-            );
-            console.log(
-              `Auto-capture: ${cfg.autoCapture ? "enabled" : "disabled"}`,
-            );
-            console.log();
+          .description(
+            "Configure memory-mimir with an API key from allinmimir.com",
+          )
+          .option("--api-key <key>", "Your Mimir API key (sk-mimir-...)")
+          .option(
+            "--url <url>",
+            "Mimir server URL",
+            "https://api.allinmimir.com",
+          )
+          .action(async (...args: unknown[]) => {
+            const opts = (args[0] ?? {}) as Record<string, string>;
+            const apiKey = opts["api-key"] || opts["apiKey"] || cfg.apiKey;
+            const mimirUrl = opts.url || cfg.mimirUrl;
 
-            const healthy = await client.health();
-            if (healthy) {
-              console.log(`Connection:   OK`);
-            } else {
-              console.log(
-                `Connection:   FAILED — cannot reach ${cfg.mimirUrl}`,
+            if (!apiKey) {
+              console.error(`Error: --api-key is required.`);
+              console.error(
+                `  Get your API key at https://allinmimir.com/dashboard`,
               );
-              console.log(
-                `  Set MIMIR_URL or plugins.entries.memory-mimir.mimirUrl`,
+              console.error(
+                `  Usage: openclaw mimir setup --api-key sk-mimir-xxx`,
               );
+              return;
             }
+
+            console.log(`Validating API key...`);
+            const tempClient = new MimirClient({ url: mimirUrl, apiKey });
+
+            let identity: {
+              user_id: string;
+              group_id: string;
+              display_name: string;
+            };
+            try {
+              identity = await tempClient.me();
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.error(`Error: ${msg}`);
+              console.error(
+                `  Check your API key or run: openclaw mimir setup --api-key sk-mimir-xxx`,
+              );
+              return;
+            }
+
+            // Write to OpenClaw plugin config
+            const configPath = path.join(
+              os.homedir(),
+              ".openclaw",
+              "openclaw.json",
+            );
+            let ocConfig: Record<string, unknown> = {};
+            try {
+              const data = fs.readFileSync(configPath, "utf8");
+              ocConfig = JSON.parse(data) as Record<string, unknown>;
+            } catch {
+              // Config doesn't exist yet — start fresh
+            }
+
+            const plugins = (ocConfig.plugins as Record<string, unknown>) ?? {};
+            const entries = (plugins.entries as Record<string, unknown>) ?? {};
+            const existing =
+              (entries["memory-mimir"] as Record<string, unknown>) ?? {};
+            const pluginCfg =
+              (existing.config as Record<string, unknown>) ?? {};
+
+            const updatedConfig = {
+              ...ocConfig,
+              plugins: {
+                ...plugins,
+                enabled: true,
+                entries: {
+                  ...entries,
+                  "memory-mimir": {
+                    ...existing,
+                    enabled: true,
+                    config: {
+                      ...pluginCfg,
+                      apiKey,
+                      mimirUrl,
+                      userId: identity.user_id,
+                      groupId: identity.group_id,
+                      autoRecall: true,
+                      autoCapture: true,
+                    },
+                  },
+                },
+              },
+            };
+
+            fs.mkdirSync(path.dirname(configPath), { recursive: true });
+            fs.writeFileSync(
+              configPath,
+              JSON.stringify(updatedConfig, null, 2),
+            );
+
+            console.log();
+            console.log(`✓ Authenticated as: ${identity.display_name}`);
+            console.log(`  User ID:   ${identity.user_id}`);
+            console.log(`  Server:    ${mimirUrl}`);
+            console.log(`  Config:    ${configPath}`);
+            console.log();
+            console.log(`Restart OpenClaw to activate memory-mimir.`);
           });
 
         mimir
@@ -837,19 +944,24 @@ const memoryMimirPlugin = {
         if (!prompt || prompt.length < 5) return;
 
         try {
-          const query = extractKeywords(prompt);
+          const query = prompt.slice(0, 200).trim();
           if (!query) return;
 
           const timeRange = extractTimeRange(prompt);
           const results = await client.search(cfg.userId, query, {
             groupId: cfg.groupId,
-            topK: cfg.maxRecallItems,
+            topK: 15,
             retrieveMethod: "agentic",
             startTime: timeRange?.start,
             endTime: timeRange?.end,
           });
 
-          if (results.results.length === 0) return;
+          if (results.results.length === 0) {
+            api.logger.info(
+              `memory-mimir: no memories found (query: ${query.slice(0, 60)})`,
+            );
+            return;
+          }
 
           api.logger.info(
             `memory-mimir: injecting ${results.results.length} memories into context`,
@@ -870,89 +982,81 @@ const memoryMimirPlugin = {
     }
 
     // Auto-capture: ingest conversation to Mimir after agent ends.
-    // Uses incremental tracking to avoid re-ingesting messages that
-    // were already captured in a previous agent_end for the same session.
+    // Uses per-message content hashing to track what has already been ingested,
+    // so restarts and session compaction never cause re-ingestion or missed messages.
     if (cfg.autoCapture) {
-      // Incremental capture state (in-memory, resets on process restart).
-      // We track by the content hash of the first message to detect session resets.
-      const CONTEXT_WINDOW = 4; // preceding messages included for LLM context
-      let capturedCount = 0;
-      let sessionFingerprint = "";
+      const CONTEXT_WINDOW = 4; // preceding (already-ingested) messages for LLM context
+      const savedState = loadCaptureState();
+      const ingestedHashes = new Set<string>(savedState.ingestedHashes);
 
       api.on("agent_end", async (event) => {
-        const success = event.success as boolean | undefined;
         const messages = event.messages as
           | Array<Record<string, unknown>>
           | undefined;
-
-        if (!success || !messages || messages.length === 0) return;
+        if (!messages || messages.length === 0) return;
 
         try {
-          // Parse all valid messages first.
           const allParsed: Array<{
             role: "user" | "assistant";
             sender_name: string;
             content: string;
+            hash: string;
           }> = [];
 
           for (const msg of messages) {
             if (!msg || typeof msg !== "object") continue;
             const role = msg.role as string;
             if (role !== "user" && role !== "assistant") continue;
-
-            let content = "";
-            if (typeof msg.content === "string") {
-              content = msg.content;
-            } else if (Array.isArray(msg.content)) {
-              const textBlocks = (msg.content as Array<Record<string, unknown>>)
-                .filter((b) => b?.type === "text" && typeof b.text === "string")
-                .map((b) => b.text as string);
-              content = textBlocks.join("\n");
-            }
-
+            const content = extractMessageText(msg.content);
             if (!content || content.includes("<memories>")) continue;
-
             allParsed.push({
               role: role as "user" | "assistant",
               sender_name: role === "user" ? cfg.userId : "assistant",
               content,
+              hash: hashMsg(role, content),
             });
           }
 
           if (allParsed.length === 0) return;
 
-          // Detect session reset (/new, /reset) by checking first message.
-          const fingerprint = allParsed[0].content.slice(0, 200);
-          if (fingerprint !== sessionFingerprint) {
-            capturedCount = 0;
-            sessionFingerprint = fingerprint;
-          }
-
-          // Nothing new since last capture.
-          if (allParsed.length <= capturedCount) return;
-
-          // Slice: context window (already captured, for LLM context) + new messages.
-          const contextStart = Math.max(0, capturedCount - CONTEXT_WINDOW);
-          const sessionMessages = allParsed.slice(contextStart);
-          const newCount = allParsed.length - capturedCount;
-
-          capturedCount = allParsed.length;
-
           api.logger.info(
-            `memory-mimir: capturing ${newCount} new messages (+${sessionMessages.length - newCount} context) (fire-and-forget)`,
+            `memory-mimir: session-end parsed=${allParsed.length}`,
           );
 
-          // Fire-and-forget: don't await because agent process may shut down
-          // before Mimir finishes processing. The server-side ingestContext()
-          // already detaches from client context, so it will complete even if
-          // we disconnect.
+          // Find the first new (not yet ingested) message.
+          const firstNewIdx = allParsed.findIndex(
+            (m) => !ingestedHashes.has(m.hash),
+          );
+          if (firstNewIdx === -1) return; // all already ingested
+
+          // Include CONTEXT_WINDOW already-ingested messages for LLM context.
+          const contextStart = Math.max(0, firstNewIdx - CONTEXT_WINDOW);
+          const toSend = allParsed.slice(contextStart);
+          const newCount = allParsed.length - firstNewIdx;
+
+          // Mark only the new messages as ingested.
+          for (let i = firstNewIdx; i < allParsed.length; i++) {
+            ingestedHashes.add(allParsed[i].hash);
+          }
+          saveCaptureState({ ingestedHashes: [...ingestedHashes] });
+
+          api.logger.info(
+            `memory-mimir: capturing ${newCount} new messages (+${toSend.length - newCount} context)`,
+          );
+
           client
-            .ingestSession(cfg.userId, sessionMessages, {
-              groupId: cfg.groupId,
-            })
+            .ingestSession(
+              cfg.userId,
+              toSend.map(({ role, sender_name, content }) => ({
+                role,
+                sender_name,
+                content,
+              })),
+              { groupId: cfg.groupId },
+            )
             .then(() => {
               api.logger.info(
-                `memory-mimir: captured ${sessionMessages.length} messages`,
+                `memory-mimir: captured ${toSend.length} messages`,
               );
             })
             .catch((err) => {

@@ -13,7 +13,7 @@ export interface MimirConfig {
 
 export function defaultConfig(): MimirConfig {
   return {
-    url: process.env.MIMIR_URL ?? "http://localhost:8766",
+    url: process.env.MIMIR_URL ?? "https://api.allinmimir.com",
     apiKey: process.env.MIMIR_API_KEY,
     timeoutMs: 30_000,
   };
@@ -164,6 +164,38 @@ export class MimirClient {
   constructor(config?: Partial<MimirConfig>) {
     const merged = { ...defaultConfig(), ...config };
     this.config = { ...merged, url: validateUrl(merged.url) };
+  }
+
+  /** Validate API key and fetch user identity from /api/v1/me. */
+  async me(): Promise<{
+    user_id: string;
+    group_id: string;
+    display_name: string;
+  }> {
+    const url = `${this.config.url}/api/v1/me`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
+    try {
+      const resp = await fetch(url, {
+        method: "GET",
+        headers: this.headers(),
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new MimirError(
+          `GET /api/v1/me failed: ${resp.status} ${body}`,
+          resp.status,
+        );
+      }
+      return (await resp.json()) as {
+        user_id: string;
+        group_id: string;
+        display_name: string;
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   /** Health check — returns true if Mimir is reachable. */
