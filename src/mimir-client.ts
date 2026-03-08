@@ -166,6 +166,37 @@ export class MimirClient {
     this.config = { ...merged, url: validateUrl(merged.url) };
   }
 
+  /**
+   * Register an anonymous device. No auth required.
+   * POST /api/v1/device/init
+   */
+  async deviceInit(): Promise<{ device_key: string; pairing_code: string }> {
+    const url = `${this.config.url}/api/v1/device/init`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new MimirError(
+          `POST /api/v1/device/init failed: ${resp.status} ${body}`,
+          resp.status,
+        );
+      }
+      return (await resp.json()) as {
+        device_key: string;
+        pairing_code: string;
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   /** Validate API key and fetch user identity from /api/v1/me. */
   async me(): Promise<{
     user_id: string;

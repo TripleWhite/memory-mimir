@@ -659,6 +659,103 @@ const memoryMimirPlugin = {
           .description("Mimir memory plugin commands");
 
         mimir
+          .command("init")
+          .description(
+            "Auto-register anonymous device and configure Mimir (zero-config)",
+          )
+          .option(
+            "--url <url>",
+            "Mimir server URL",
+            "https://api.allinmimir.com",
+          )
+          .action(async (...args: unknown[]) => {
+            const opts = (args[0] ?? {}) as Record<string, string>;
+            const mimirUrl = opts.url || cfg.mimirUrl;
+
+            console.log();
+            console.log("\x1b[2m  Connecting to Mimir gateway...\x1b[0m");
+
+            // 1. Call device/init (no auth needed)
+            const initClient = new MimirClient({ url: mimirUrl });
+            let deviceData: { device_key: string; pairing_code: string };
+            try {
+              deviceData = await initClient.deviceInit();
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.error(
+                `\x1b[31m  ✗ Mimir gateway unreachable: ${msg}\x1b[0m`,
+              );
+              console.error(
+                `\x1b[2m    Check your network or try: --url <server-url>\x1b[0m`,
+              );
+              return;
+            }
+
+            // 2. Patch OpenClaw config
+            const configPath = path.join(
+              os.homedir(),
+              ".openclaw",
+              "openclaw.json",
+            );
+            let ocConfig: Record<string, unknown> = {};
+            try {
+              const data = fs.readFileSync(configPath, "utf8");
+              ocConfig = JSON.parse(data) as Record<string, unknown>;
+            } catch {
+              // Config doesn't exist — start fresh
+            }
+
+            const plugins = (ocConfig.plugins as Record<string, unknown>) ?? {};
+            const entries = (plugins.entries as Record<string, unknown>) ?? {};
+            const existing =
+              (entries["memory-mimir"] as Record<string, unknown>) ?? {};
+            const pluginCfg =
+              (existing.config as Record<string, unknown>) ?? {};
+
+            const updatedConfig = {
+              ...ocConfig,
+              plugins: {
+                ...plugins,
+                enabled: true,
+                entries: {
+                  ...entries,
+                  "memory-mimir": {
+                    ...existing,
+                    enabled: true,
+                    config: {
+                      ...pluginCfg,
+                      apiKey: deviceData.device_key,
+                      mimirUrl,
+                      autoRecall: true,
+                      autoCapture: true,
+                    },
+                  },
+                },
+              },
+            };
+
+            fs.mkdirSync(path.dirname(configPath), { recursive: true });
+            fs.writeFileSync(
+              configPath,
+              JSON.stringify(updatedConfig, null, 2),
+            );
+
+            // 3. Print cyberpunk welcome
+            console.log(`
+  \x1b[1;32m✅ Mimir Quantum Core activated. Cloud memory grid online.\x1b[0m
+  \x1b[2m─────────────────────────────────────────────────────\x1b[0m
+  \x1b[2m🔒 Anonymous secure channel assigned. Config injected into openclaw.json.\x1b[0m
+  \x1b[2m💡 You can use OpenClaw now — memories upload in sandbox mode.\x1b[0m
+
+  \x1b[1m🌐 Want to visualize and manage your AI memory graph on the web?\x1b[0m
+  \x1b[34m🔗 1. Open: https://app.allinmimir.com/dashboard/pair\x1b[0m
+  \x1b[1;35m🔑 2. Enter pairing code: \x1b[43;30m ${deviceData.pairing_code} \x1b[0m
+
+  \x1b[2;3m(Tip: Skip this step to stay in permanent anonymous sandbox mode)\x1b[0m
+`);
+          });
+
+        mimir
           .command("setup")
           .description(
             "Configure memory-mimir with an API key from allinmimir.com",
