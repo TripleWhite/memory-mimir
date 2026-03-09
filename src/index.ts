@@ -136,11 +136,11 @@ function resolveConfig(pluginConfig: Record<string, unknown>): PluginConfig {
       process.env.MIMIR_AUTO_CAPTURE !== "false",
     maxRecallTokens: parsePositiveInt(
       pluginConfig.maxRecallTokens as number | undefined,
-      500,
+      800,
     ),
     maxRecallItems: parsePositiveInt(
       pluginConfig.maxRecallItems as number | undefined,
-      8,
+      12,
     ),
   };
 }
@@ -524,9 +524,14 @@ function registerCliOnly(
             (entries["memory-mimir"] as Record<string, unknown>) ?? {};
           const pluginCfg = (existing.config as Record<string, unknown>) ?? {};
           const slots = (plugins.slots as Record<string, unknown>) ?? {};
-          const allow = ((plugins.allow as string[]) ?? []).filter(
-            (x: string) => x !== "memory-mimir",
-          );
+          const existingAllow = plugins.allow as string[] | undefined;
+          const allowPatch: Record<string, unknown> = {};
+          if (Array.isArray(existingAllow)) {
+            allowPatch.allow = [
+              ...existingAllow.filter((x: string) => x !== "memory-mimir"),
+              "memory-mimir",
+            ];
+          }
 
           const updatedConfig = {
             ...ocConfig,
@@ -539,7 +544,6 @@ function registerCliOnly(
                 "memory-mimir": {
                   ...existing,
                   enabled: true,
-                  hooks: { allowPromptInjection: true },
                   config: {
                     ...pluginCfg,
                     apiKey: deviceData.device_key,
@@ -549,7 +553,7 @@ function registerCliOnly(
                   },
                 },
               },
-              allow: [...allow, "memory-mimir"],
+              ...allowPatch,
             },
           };
 
@@ -608,6 +612,11 @@ const memoryMimirPlugin = {
     type: "object",
     additionalProperties: false,
     properties: {
+      apiKey: {
+        type: "string",
+        description:
+          "Mimir API key (device key mimir_dev_... or sk-mimir-...). Run 'openclaw mimir init' to get one.",
+      },
       mimirUrl: {
         type: "string",
         description: "Mimir server URL (e.g. http://localhost:8766)",
@@ -787,6 +796,115 @@ const memoryMimirPlugin = {
       { name: "mimir_forget" },
     );
 
+    api.registerTool(
+      {
+        name: "mimir_search",
+        label: "Mimir Search",
+        description:
+          "Search long-term memory for specific facts, people, events, or past conversations. " +
+          "Use when the user asks about something from the past, references a person/place/topic, " +
+          "or when auto-recalled memories are insufficient. " +
+          "Tips: use memory_types to narrow results — " +
+          '"event_log" for specific facts/events, "entity" for people/places/things, ' +
+          '"relation" for how entities connect, "episode" for full conversation summaries.',
+        parameters: Type.Object({
+          query: Type.String({
+            description:
+              "Search query — be specific. Use names, dates, keywords from the topic.",
+          }),
+          memory_types: Type.Optional(
+            Type.Array(
+              Type.String({
+                description:
+                  "Filter by type: event_log, entity, relation, episode, raw_doc, foresight",
+              }),
+            ),
+          ),
+          start_time: Type.Optional(
+            Type.String({
+              description:
+                "ISO 8601 start time filter (e.g. 2025-01-01T00:00:00Z)",
+            }),
+          ),
+          end_time: Type.Optional(
+            Type.String({
+              description:
+                "ISO 8601 end time filter (e.g. 2025-12-31T23:59:59Z)",
+            }),
+          ),
+          top_k: Type.Optional(
+            Type.Number({
+              description: "Max results to return (default 10, max 30)",
+            }),
+          ),
+        }),
+        async execute(_toolCallId: string, params: Record<string, unknown>) {
+          const query = (params.query as string)?.trim();
+          if (!query || query.length > 2000) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: "Error: query must be 1-2000 characters.",
+                },
+              ],
+              details: { error: "invalid_query" },
+            };
+          }
+
+          const memoryTypes = params.memory_types as string[] | undefined;
+          const startTime = params.start_time as string | undefined;
+          const endTime = params.end_time as string | undefined;
+          const topK = Math.min(
+            Math.max((params.top_k as number) || 10, 1),
+            30,
+          );
+
+          try {
+            const results = await client.search(cfg.userId, query, {
+              groupId: cfg.groupId,
+              retrieveMethod: "rrf",
+              memoryTypes,
+              topK,
+              startTime,
+              endTime,
+            });
+
+            if (results.results.length === 0) {
+              return {
+                content: [
+                  { type: "text", text: "No matching memories found." },
+                ],
+                details: { count: 0 },
+              };
+            }
+
+            const formatted = formatSearchResults(results, {
+              maxItems: topK,
+              maxChars: 4000,
+            });
+
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Found ${results.results.length} memory item(s):\n\n${formatted}`,
+                },
+              ],
+              details: { count: results.results.length },
+            };
+          } catch (err) {
+            const msg = err instanceof MimirError ? err.message : String(err);
+            return {
+              content: [{ type: "text", text: `Memory search failed: ${msg}` }],
+              details: { error: msg },
+            };
+          }
+        },
+      },
+      { name: "mimir_search" },
+    );
+
     // ════════════════════════════════════════════════════════
     // CLI Commands
     // ════════════════════════════════════════════════════════
@@ -852,10 +970,14 @@ const memoryMimirPlugin = {
               (existing.config as Record<string, unknown>) ?? {};
 
             const slots = (plugins.slots as Record<string, unknown>) ?? {};
-            const allow = ((plugins.allow as string[]) ?? []).filter(
-              (x: string) => x !== "memory-mimir",
-            );
-
+            const existingAllow2 = plugins.allow as string[] | undefined;
+            const allowPatch2: Record<string, unknown> = {};
+            if (Array.isArray(existingAllow2)) {
+              allowPatch2.allow = [
+                ...existingAllow2.filter((x: string) => x !== "memory-mimir"),
+                "memory-mimir",
+              ];
+            }
             const updatedConfig = {
               ...ocConfig,
               plugins: {
@@ -867,7 +989,6 @@ const memoryMimirPlugin = {
                   "memory-mimir": {
                     ...existing,
                     enabled: true,
-                    hooks: { allowPromptInjection: true },
                     config: {
                       ...pluginCfg,
                       apiKey: deviceData.device_key,
@@ -877,7 +998,7 @@ const memoryMimirPlugin = {
                     },
                   },
                 },
-                allow: [...allow, "memory-mimir"],
+                ...allowPatch2,
               },
             };
 
@@ -969,10 +1090,16 @@ const memoryMimirPlugin = {
             const pluginCfg =
               (existing.config as Record<string, unknown>) ?? {};
             const slots = (plugins.slots as Record<string, unknown>) ?? {};
-            const setupAllow = ((plugins.allow as string[]) ?? []).filter(
-              (x: string) => x !== "memory-mimir",
-            );
-
+            const setupExistingAllow = plugins.allow as string[] | undefined;
+            const setupAllowPatch: Record<string, unknown> = {};
+            if (Array.isArray(setupExistingAllow)) {
+              setupAllowPatch.allow = [
+                ...setupExistingAllow.filter(
+                  (x: string) => x !== "memory-mimir",
+                ),
+                "memory-mimir",
+              ];
+            }
             const updatedConfig = {
               ...ocConfig,
               plugins: {
@@ -984,7 +1111,6 @@ const memoryMimirPlugin = {
                   "memory-mimir": {
                     ...existing,
                     enabled: true,
-                    hooks: { allowPromptInjection: true },
                     config: {
                       ...pluginCfg,
                       apiKey,
@@ -996,7 +1122,7 @@ const memoryMimirPlugin = {
                     },
                   },
                 },
-                allow: [...setupAllow, "memory-mimir"],
+                ...setupAllowPatch,
               },
             };
 
@@ -1195,14 +1321,16 @@ const memoryMimirPlugin = {
         if (!prompt || prompt.length < 5) return;
 
         try {
-          const query = prompt.slice(0, 200).trim();
+          const query =
+            prompt.length > 100 ? extractKeywords(prompt) : prompt.trim();
           if (!query) return;
 
           const timeRange = extractTimeRange(prompt);
           const results = await client.search(cfg.userId, query, {
             groupId: cfg.groupId,
             topK: 15,
-            retrieveMethod: "agentic",
+            retrieveMethod: "rrf",
+            memoryTypes: ["event_log", "entity", "relation"],
             startTime: timeRange?.start,
             endTime: timeRange?.end,
           });

@@ -21,8 +21,8 @@ export interface FormatterOptions {
 }
 
 const DEFAULT_OPTIONS: FormatterOptions = {
-  maxChars: 2000,
-  maxItems: 8,
+  maxChars: 3000,
+  maxItems: 12,
 };
 
 // ─── Main Formatter ──────────────────────────────────────────
@@ -32,7 +32,7 @@ const DEFAULT_OPTIONS: FormatterOptions = {
  */
 export function formatSearchResults(
   response: SearchResponse,
-  options?: Partial<FormatterOptions>
+  options?: Partial<FormatterOptions>,
 ): string {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const { results } = response;
@@ -80,8 +80,12 @@ export function formatGraphResults(result: GraphTraverseResult): string {
 
   // Format entities with their summaries
   for (const entity of result.entities.slice(0, 5)) {
-    const aliases = entity.aliases?.length ? ` (aka ${entity.aliases.join(", ")})` : "";
-    lines.push(`- **${entity.name}**${aliases}: ${entity.summary || entity.entity_type}`);
+    const aliases = entity.aliases?.length
+      ? ` (aka ${entity.aliases.join(", ")})`
+      : "";
+    lines.push(
+      `- **${entity.name}**${aliases}: ${entity.summary || entity.entity_type}`,
+    );
   }
 
   // Format relations as "A → relation → B"
@@ -115,26 +119,30 @@ function formatItem(item: SearchResultItem): string {
       const title = (data.title as string) || "";
       const content = (data.content as string) || "";
       const summary = title || firstLine(content);
-      return `- [${date}] ${truncate(summary, 150)}`;
+      return `- [${date}] ${truncate(summary, 200)}`;
     }
 
     case "event_log": {
       const date = formatDate(data.timestamp as string | undefined);
       const fact = (data.fact as string) || "";
-      return `- [${date}] ${truncate(fact, 150)}`;
+      return `- [${date}] ${truncate(fact, 200)}`;
     }
 
     case "entity": {
       const name = (data.name as string) || "";
       const entityType = (data.entity_type as string) || "";
       const summary = (data.summary as string) || "";
-      return `- [entity] ${name} (${entityType}): ${truncate(summary, 150)}`;
+      return `- [entity] ${name} (${entityType}): ${truncate(summary, 200)}`;
     }
 
     case "relation": {
       const fact = (data.fact as string) || "";
       const relType = (data.relation_type as string) || "";
-      return `- [relation] ${relType}: ${truncate(fact, 150)}`;
+      const sourceName = (data.source_entity_name as string) || "";
+      const targetName = (data.target_entity_name as string) || "";
+      const label =
+        sourceName && targetName ? `${sourceName} → ${targetName}` : relType;
+      return `- [relation] ${label}: ${truncate(fact, 200)}`;
     }
 
     case "foresight": {
