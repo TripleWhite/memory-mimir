@@ -11,6 +11,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import * as readline from "node:readline";
 import { execSync } from "node:child_process";
 import { MimirClient } from "./mimir-client.js";
 
@@ -20,11 +21,13 @@ function parseArgs(argv: string[]): {
   command: string;
   url: string;
   apiKey: string;
+  code: string;
 } {
   const args = argv.slice(2); // skip node + script
   const command = args[0] ?? "init";
   let url = DEFAULT_URL;
   let apiKey = "";
+  let code = "";
 
   for (let i = 1; i < args.length; i++) {
     if (args[i] === "--url" && args[i + 1]) {
@@ -34,10 +37,12 @@ function parseArgs(argv: string[]): {
       args[i + 1]
     ) {
       apiKey = args[++i];
+    } else if (args[i] === "--code" && args[i + 1]) {
+      code = args[++i];
     }
   }
 
-  return { command, url, apiKey };
+  return { command, url, apiKey, code };
 }
 
 function readConfig(configPath: string): Record<string, unknown> {
@@ -117,47 +122,122 @@ function installPlugin(): boolean {
   }
 }
 
-async function cmdInit(url: string): Promise<void> {
+function promptForCode(): Promise<string> {
+  if (!process.stdin.isTTY) {
+    return Promise.resolve("");
+  }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question(
+      "\x1b[1m  Enter invite code (or press Enter to skip): \x1b[0m",
+      (answer) => {
+        rl.close();
+        resolve(answer.trim());
+      },
+    );
+  });
+}
+
+async function cmdInit(url: string, code: string): Promise<void> {
   console.log();
-  console.log("\x1b[1m  Mimir Memory — Zero-Config Setup\x1b[0m");
+  console.log("\x1b[1m  Mimir Memory — Setup\x1b[0m");
   console.log("\x1b[2m  ─────────────────────────────────\x1b[0m");
   console.log();
 
-  // 1. Register device
-  console.log("\x1b[2m  Connecting to Mimir gateway...\x1b[0m");
+  // If no code provided, prompt interactively
+  if (!code) {
+    code = await promptForCode();
+  }
+
+  if (!code) {
+    // User pressed Enter without code — show help
+    console.log(`
+  \x1b[33m  Mimir is currently in closed beta.\x1b[0m
+
+  \x1b[2m  To get started:\x1b[0m
+  \x1b[2m    1. Get an invite code from an existing Mimir user\x1b[0m
+  \x1b[2m    2. Or register at https://www.allinmimir.com\x1b[0m
+
+  \x1b[2m  Then run:\x1b[0m
+  \x1b[1m    npx memory-mimir init --code YOUR_CODE\x1b[0m
+
+  \x1b[2m  Already have an API key?\x1b[0m
+  \x1b[1m    npx memory-mimir setup --api-key sk-mimir-xxx\x1b[0m
+`);
+    process.exit(0);
+  }
+
+  // Validate format client-side
+  code = code.toUpperCase().trim();
+
+  console.log("\x1b[2m  Validating invite code...\x1b[0m");
   const client = new MimirClient({ url });
-  let deviceData: { device_key: string; pairing_code: string };
+
+  let deviceData: {
+    device_key: string;
+    pairing_code?: string;
+    memory_user_id?: string;
+    is_recovery?: boolean;
+  };
+
   try {
-    deviceData = await client.deviceInit();
+    deviceData = await client.deviceInit({ inviteCode: code });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`\x1b[31m  ✗ Mimir gateway unreachable: ${msg}\x1b[0m`);
-    console.error(
-      `\x1b[2m    Check your network or try: npx memory-mimir init --url <server-url>\x1b[0m`,
-    );
+    if (msg.includes("not found")) {
+      console.error(
+        "\x1b[31m  ✗ Invalid invite code. Please check and try again.\x1b[0m",
+      );
+    } else if (msg.includes("expired")) {
+      console.error("\x1b[31m  ✗ This invite code has expired.\x1b[0m");
+    } else if (msg.includes("maximum devices")) {
+      console.error(
+        "\x1b[31m  ✗ Maximum devices reached for this invite code (limit: 3).\x1b[0m",
+      );
+      console.error(
+        "\x1b[2m    Revoke an old device at https://www.allinmimir.com/dashboard\x1b[0m",
+      );
+    } else {
+      console.error(`\x1b[31m  ✗ Failed to activate: ${msg}\x1b[0m`);
+    }
     process.exit(1);
   }
 
-  // 2. Install plugin via openclaw CLI (best-effort)
+  // Install plugin (best-effort)
   installPlugin();
 
-  // 3. Write config
+  // Write config
   const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json");
   writeConfig(configPath, deviceData.device_key, url);
 
-  // 4. Success
-  console.log(`
+  if (deviceData.is_recovery) {
+    console.log(`
+  \x1b[1;32m✅ Account recovered! Memories restored.\x1b[0m
+  \x1b[2m─────────────────────────────────────────\x1b[0m
+  \x1b[2m  Memory ID:  ${deviceData.memory_user_id}\x1b[0m
+  \x1b[2m  Server:     ${url}\x1b[0m
+  \x1b[2m  Config:     ${configPath}\x1b[0m
+
+  \x1b[1m  Restart OpenClaw to reconnect to your memories.\x1b[0m
+`);
+  } else {
+    console.log(`
   \x1b[1;32m✅ Mimir activated! Memory engine online.\x1b[0m
   \x1b[2m─────────────────────────────────────────\x1b[0m
-  \x1b[2m🔒 Anonymous channel assigned. Config written to openclaw.json.\x1b[0m
-  \x1b[2m💡 Restart OpenClaw — memories will upload in sandbox mode.\x1b[0m
+  \x1b[2m  Memory ID:  ${deviceData.memory_user_id}\x1b[0m
+  \x1b[2m  Server:     ${url}\x1b[0m
+  \x1b[2m  Config:     ${configPath}\x1b[0m
 
-  \x1b[1m🌐 To manage your AI memory graph on the web:\x1b[0m
-  \x1b[34m🔗 1. Open: https://www.allinmimir.com/dashboard\x1b[0m
-  \x1b[1;35m🔑 2. Enter pairing code: \x1b[43;30m ${deviceData.pairing_code} \x1b[0m
+  \x1b[1m  Restart OpenClaw to start building memories.\x1b[0m
 
-  \x1b[2;3m(Skip this to stay in permanent anonymous sandbox mode)\x1b[0m
+  \x1b[2;3m  💡 Save your invite code — use it to recover your account on any device.\x1b[0m
 `);
+  }
 }
 
 async function cmdSetup(url: string, apiKey: string): Promise<void> {
@@ -201,18 +281,21 @@ async function cmdSetup(url: string, apiKey: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const { command, url, apiKey } = parseArgs(process.argv);
+  const { command, url, apiKey, code } = parseArgs(process.argv);
 
   switch (command) {
     case "init":
-      await cmdInit(url);
+      await cmdInit(url, code);
       break;
     case "setup":
       await cmdSetup(url, apiKey);
       break;
     default:
       console.log("Usage:");
-      console.log("  npx memory-mimir init              # zero-config setup");
+      console.log(
+        "  npx memory-mimir init --code CODE  # activate with invite code",
+      );
+      console.log("  npx memory-mimir init              # interactive setup");
       console.log(
         "  npx memory-mimir setup --api-key X  # use existing API key",
       );

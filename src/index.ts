@@ -494,7 +494,12 @@ function registerCliOnly(
           console.log("\x1b[2m  Connecting to Mimir gateway...\x1b[0m");
 
           const initClient = new MimirClient({ url: mimirUrl });
-          let deviceData: { device_key: string; pairing_code: string };
+          let deviceData: {
+            device_key: string;
+            pairing_code?: string;
+            memory_user_id?: string;
+            is_recovery?: boolean;
+          };
           try {
             deviceData = await initClient.deviceInit();
           } catch (err) {
@@ -863,7 +868,7 @@ const memoryMimirPlugin = {
           try {
             const results = await client.search(cfg.userId, query, {
               groupId: cfg.groupId,
-              retrieveMethod: "rrf",
+              retrieveMethod: "full",
               memoryTypes,
               topK,
               startTime,
@@ -934,7 +939,12 @@ const memoryMimirPlugin = {
 
             // 1. Call device/init (no auth needed)
             const initClient = new MimirClient({ url: mimirUrl });
-            let deviceData: { device_key: string; pairing_code: string };
+            let deviceData: {
+              device_key: string;
+              pairing_code?: string;
+              memory_user_id?: string;
+              is_recovery?: boolean;
+            };
             try {
               deviceData = await initClient.deviceInit();
             } catch (err) {

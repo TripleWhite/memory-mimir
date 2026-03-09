@@ -62,7 +62,13 @@ export interface IngestNoteRequest {
 
 // ─── Search Types ────────────────────────────────────────────
 
-export type RetrieveMethod = "rrf" | "bm25" | "vector" | "agentic" | "full";
+export type RetrieveMethod =
+  | "rrf"
+  | "bm25"
+  | "keyword"
+  | "vector"
+  | "agentic"
+  | "full";
 
 export interface SearchRequest {
   readonly query: string;
@@ -170,7 +176,12 @@ export class MimirClient {
    * Register an anonymous device. No auth required.
    * POST /api/v1/device/init
    */
-  async deviceInit(): Promise<{ device_key: string; pairing_code: string }> {
+  async deviceInit(options?: { inviteCode?: string }): Promise<{
+    device_key: string;
+    pairing_code?: string;
+    memory_user_id?: string;
+    is_recovery?: boolean;
+  }> {
     const url = `${this.config.url}/api/v1/device/init`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
@@ -178,7 +189,9 @@ export class MimirClient {
       const resp = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify(
+          options?.inviteCode ? { invite_code: options.inviteCode } : {},
+        ),
         signal: controller.signal,
       });
       if (!resp.ok) {
@@ -190,7 +203,9 @@ export class MimirClient {
       }
       return (await resp.json()) as {
         device_key: string;
-        pairing_code: string;
+        pairing_code?: string;
+        memory_user_id?: string;
+        is_recovery?: boolean;
       };
     } finally {
       clearTimeout(timeout);
