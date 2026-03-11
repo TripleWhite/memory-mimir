@@ -739,67 +739,7 @@ const memoryMimirPlugin = {
       { name: "mimir_store" },
     );
 
-    api.registerTool(
-      {
-        name: "mimir_forget",
-        label: "Mimir Forget",
-        description:
-          "Look up information in memory the user wants to forget. " +
-          "NOTE: Deletion is not yet implemented — this shows what would be affected.",
-        parameters: Type.Object({
-          query: Type.String({ description: "Description of what to forget" }),
-        }),
-        async execute(_toolCallId: string, params: Record<string, unknown>) {
-          const query = (params.query as string)?.trim();
-          if (!query || query.length > 1000) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "Error: query must be 1-1000 characters.",
-                },
-              ],
-              details: { error: "invalid_query" },
-            };
-          }
-
-          try {
-            const results = await client.search(cfg.userId, query, {
-              groupId: cfg.groupId,
-              topK: 5,
-            });
-
-            if (results.results.length === 0) {
-              return {
-                content: [
-                  { type: "text", text: "No matching memories found." },
-                ],
-                details: { count: 0 },
-              };
-            }
-
-            const preview = formatSearchResults(results, {
-              maxItems: 5,
-              maxChars: 2000,
-            });
-            const text =
-              `Found ${results.results.length} matching item(s). ` +
-              `Deletion is not yet supported.\n\n${preview}`;
-            return {
-              content: [{ type: "text", text }],
-              details: { count: results.results.length },
-            };
-          } catch (err) {
-            const msg = err instanceof MimirError ? err.message : String(err);
-            return {
-              content: [{ type: "text", text: `Forget lookup failed: ${msg}` }],
-              details: { error: msg },
-            };
-          }
-        },
-      },
-      { name: "mimir_forget" },
-    );
+    // mimir_forget: removed until server-side deletion API is implemented
 
     api.registerTool(
       {

@@ -395,6 +395,10 @@ export class MimirClient {
   // ─── HTTP Helpers ────────────────────────────────────────
 
   private async get<T>(path: string): Promise<APIResponse<T>> {
+    return this.withRetry(() => this.doGet<T>(path));
+  }
+
+  private async doGet<T>(path: string): Promise<APIResponse<T>> {
     const url = `${this.config.url}${path}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
@@ -425,14 +429,21 @@ export class MimirClient {
   }
 
   private async post<T>(path: string, body: unknown): Promise<APIResponse<T>> {
+    const isIngest = path.includes("/ingest") || path.includes("/consolidate");
+    // No retry for long-running ingest/consolidate
+    if (isIngest) return this.doPost<T>(path, body);
+    return this.withRetry(() => this.doPost<T>(path, body));
+  }
+
+  private async doPost<T>(
+    path: string,
+    body: unknown,
+  ): Promise<APIResponse<T>> {
     const url = `${this.config.url}${path}`;
     const controller = new AbortController();
-    // Ingest/consolidate can take 10+ minutes for large sessions (LLM extraction).
-    // The server detaches from client context so it will finish even if we disconnect,
-    // but we still want to wait long enough to get the response when possible.
     const isIngest = path.includes("/ingest") || path.includes("/consolidate");
     const timeoutMs = isIngest
-      ? Math.max(this.config.timeoutMs, 900_000) // 15 minutes for ingest
+      ? Math.max(this.config.timeoutMs, 900_000)
       : this.config.timeoutMs;
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -461,6 +472,24 @@ export class MimirClient {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  /** Retry on transient network errors (timeout, connection reset). */
+  private async withRetry<T>(fn: () => Promise<T>, maxRetries = 1): Promise<T> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        // Only retry on network/timeout errors, not on 4xx/5xx
+        if (err instanceof MimirError) throw err;
+        if (attempt < maxRetries) {
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        }
+      }
+    }
+    throw lastErr;
   }
 
   private headers(): Record<string, string> {
