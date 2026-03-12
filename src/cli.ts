@@ -3,15 +3,13 @@
  * memory-mimir CLI — standalone installer for OpenClaw.
  *
  * Usage:
- *   npx memory-mimir init          # register device + install plugin + write config
- *   npx memory-mimir init --url X  # custom Mimir server
- *   npx memory-mimir setup --api-key sk-mimir-xxx  # use existing API key
+ *   npx memory-mimir setup --api-key sk-mimir-xxx  # install with API key
+ *   npx memory-mimir install                       # install plugin files only
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { MimirClient } from "./mimir-client.js";
 
@@ -20,19 +18,18 @@ const __dirname = path.dirname(__filename);
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
 
 const DEFAULT_URL = "https://api.allinmimir.com";
+const SIGNUP_URL = "https://www.allinmimir.com";
 
 function parseArgs(argv: string[]): {
   command: string;
   url: string;
   apiKey: string;
-  code: string;
   skipVerify: boolean;
 } {
   const args = argv.slice(2); // skip node + script
-  const command = args[0] ?? "init";
+  const command = args[0] ?? "";
   let url = DEFAULT_URL;
   let apiKey = "";
-  let code = "";
   let skipVerify = false;
 
   for (let i = 1; i < args.length; i++) {
@@ -43,14 +40,12 @@ function parseArgs(argv: string[]): {
       args[i + 1]
     ) {
       apiKey = args[++i];
-    } else if (args[i] === "--code" && args[i + 1]) {
-      code = args[++i];
     } else if (args[i] === "--skip-verify") {
       skipVerify = true;
     }
   }
 
-  return { command, url, apiKey, code, skipVerify };
+  return { command, url, apiKey, skipVerify };
 }
 
 function readConfig(configPath: string): Record<string, unknown> {
@@ -329,6 +324,14 @@ function installPlugin(): boolean {
       path.join(extensionDir, "package.json"),
     );
 
+    // Copy skills/ (plugin-contributed SKILL.md for persistent discovery)
+    const skillsSrc = path.join(PACKAGE_ROOT, "skills");
+    if (fs.existsSync(skillsSrc)) {
+      fs.cpSync(skillsSrc, path.join(extensionDir, "skills"), {
+        recursive: true,
+      });
+    }
+
     // Copy node_modules/ (runtime dependencies)
     const nmSrc = path.join(PACKAGE_ROOT, "node_modules");
     if (fs.existsSync(nmSrc)) {
@@ -345,7 +348,7 @@ function installPlugin(): boolean {
 
 function printSuccess(): void {
   console.log(`
-  ✅ Memory activated! Restart OpenClaw to start.
+  ✅ Memory activated! Restart your AI agent to start.
 
   After restart, try:
   - Introduce yourself (name, job, interests) — I'll remember
@@ -356,81 +359,16 @@ function printSuccess(): void {
 `);
 }
 
-function promptForCode(): Promise<string> {
-  if (!process.stdin.isTTY) {
-    return Promise.resolve("");
-  }
+function printUsage(): void {
+  console.log(`
+  Mimir — Long-term memory for your AI agent.
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  Usage:
+    npx memory-mimir setup --api-key <KEY>   Install with API key
+    npx memory-mimir install                 Install plugin files only
 
-  return new Promise((resolve) => {
-    rl.question(
-      "\x1b[1m  Enter invite code (or press Enter to skip): \x1b[0m",
-      (answer) => {
-        rl.close();
-        resolve(answer.trim());
-      },
-    );
-  });
-}
-
-async function cmdInit(url: string, code: string): Promise<void> {
-  // If no code provided, prompt interactively
-  if (!code) {
-    code = await promptForCode();
-  }
-
-  if (!code) {
-    console.log(`
-  Mimir is in closed beta. You need an invite code to get started.
-  Get one at: https://www.allinmimir.com
-
-  Usage: npx memory-mimir init --code XXXXXX
+  Get your API key at: ${SIGNUP_URL}
 `);
-    process.exit(1);
-  }
-
-  code = code.toUpperCase().trim();
-  const client = new MimirClient({ url });
-
-  let deviceData: {
-    device_key: string;
-    pairing_code?: string;
-    memory_user_id?: string;
-    is_recovery?: boolean;
-  };
-
-  try {
-    deviceData = await client.deviceInit({ inviteCode: code });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("not found")) {
-      console.error("\n  ✗ Invalid invite code.\n");
-    } else if (msg.includes("expired")) {
-      console.error("\n  ✗ Invite code expired.\n");
-    } else if (msg.includes("already activated")) {
-      console.error(
-        "\n  ✗ This invite code was already used. Add new devices via Dashboard → API key.\n",
-      );
-    } else if (msg.includes("maximum devices")) {
-      console.error(
-        "\n  ✗ Maximum devices reached. Add new devices via Dashboard → API key.\n",
-      );
-    } else {
-      console.error(`\n  ✗ ${msg}\n`);
-    }
-    process.exit(1);
-  }
-
-  installPlugin();
-  installSkill();
-  const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json");
-  writeConfig(configPath, deviceData.device_key, url);
-
-  printSuccess();
 }
 
 async function cmdSetup(
@@ -440,7 +378,10 @@ async function cmdSetup(
 ): Promise<void> {
   if (!apiKey) {
     console.log(`
-  Usage: npx memory-mimir setup --api-key sk-mimir-xxx
+  ✗ API key required.
+
+  Get your API key at: ${SIGNUP_URL}
+  Then run: npx memory-mimir setup --api-key <YOUR_KEY>
 `);
     process.exit(1);
   }
@@ -451,7 +392,8 @@ async function cmdSetup(
       await client.me();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`\n  ✗ Invalid API key: ${msg}\n`);
+      console.error(`\n  ✗ Invalid API key: ${msg}`);
+      console.error(`  Get a valid key at: ${SIGNUP_URL}\n`);
       process.exit(1);
     }
   }
@@ -465,31 +407,19 @@ async function cmdSetup(
 }
 
 async function main(): Promise<void> {
-  const { command, url, apiKey, code, skipVerify } = parseArgs(process.argv);
+  const { command, url, apiKey, skipVerify } = parseArgs(process.argv);
 
   switch (command) {
-    case "init":
-      await cmdInit(url, code);
-      break;
     case "setup":
       await cmdSetup(url, apiKey, skipVerify);
       break;
     case "install":
       installPlugin();
       installSkill();
+      console.log("\n  ✅ Plugin files installed.\n");
       break;
     default:
-      console.log("Usage:");
-      console.log(
-        "  npx memory-mimir init --code CODE   # activate with invite code",
-      );
-      console.log("  npx memory-mimir init               # interactive setup");
-      console.log(
-        "  npx memory-mimir setup --api-key X  # use existing API key",
-      );
-      console.log(
-        "  npx memory-mimir install            # install plugin + skill only",
-      );
+      printUsage();
       process.exit(0);
   }
 }

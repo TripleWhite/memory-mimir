@@ -6,6 +6,7 @@
   "kind": "memory",
   "entry": "dist/index.js",
   "slots": ["plugins.slots.memory"],
+  "skills": ["skills/mimir-memory"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
