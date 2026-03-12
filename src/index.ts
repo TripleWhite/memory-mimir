@@ -323,24 +323,23 @@ export function extractMessageText(content: unknown): string {
       case "text":
         if (typeof block.text === "string") parts.push(block.text);
         break;
-      case "tool_result": {
-        // Recursively extract nested text (e.g. WebFetch, Read results)
-        const inner = extractMessageText(block.content);
-        if (inner) parts.push(inner);
+      case "tool_result":
+        // Drop tool results entirely — file contents, command output, search
+        // results are noise for memory extraction. The assistant's natural
+        // language summary of these results is what matters.
         break;
-      }
       case "tool_use":
-        // Record which tool was called so context isn't lost
+        // Keep only the tool name for minimal context (e.g. "used Read"),
+        // drop args to avoid ingesting file paths, code snippets, etc.
         if (typeof block.name === "string") {
-          const args = block.input ? JSON.stringify(block.input) : "";
-          parts.push(`[工具: ${block.name}(${args})]`);
+          parts.push(`[used ${block.name}]`);
         }
         break;
       case "image":
-        parts.push("[图片]");
+        parts.push("[image]");
         break;
       case "document":
-        parts.push("[文档]");
+        parts.push("[document]");
         break;
     }
   }
@@ -1338,6 +1337,17 @@ const memoryMimirPlugin = {
             if (role !== "user" && role !== "assistant") continue;
             const content = extractMessageText(msg.content);
             if (!content || content.includes("<memories>")) continue;
+            // Skip system-injected content (XML tags from hooks, reminders, etc.)
+            if (
+              /^<(system-reminder|memories|relevant-memories)>/i.test(
+                content.trim(),
+              )
+            )
+              continue;
+            // Skip messages that are only tool markers with no real text,
+            // e.g. "[used Read]\n[used Edit]" — no knowledge to extract.
+            if (/^\s*(\[(used \w+|image|document)\]\s*)+$/.test(content))
+              continue;
             allParsed.push({
               role: role as "user" | "assistant",
               sender_name: role === "user" ? cfg.userId : "assistant",
@@ -1367,7 +1377,14 @@ const memoryMimirPlugin = {
           for (let i = firstNewIdx; i < allParsed.length; i++) {
             ingestedHashes.add(allParsed[i].hash);
           }
-          saveCaptureState({ ingestedHashes: [...ingestedHashes] });
+          // Cap stored hashes to prevent unbounded growth — keep most recent.
+          const MAX_HASHES = 5000;
+          const hashArr = [...ingestedHashes];
+          const trimmed =
+            hashArr.length > MAX_HASHES
+              ? hashArr.slice(hashArr.length - MAX_HASHES)
+              : hashArr;
+          saveCaptureState({ ingestedHashes: trimmed });
 
           api.logger.info(
             `memory-mimir: capturing ${newCount} new messages (+${toSend.length - newCount} context)`,
