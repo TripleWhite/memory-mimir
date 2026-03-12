@@ -112,6 +112,7 @@ interface PluginConfig {
   readonly apiKey: string;
   readonly userId: string;
   readonly groupId: string;
+  readonly displayName: string;
   readonly autoRecall: boolean;
   readonly autoCapture: boolean;
   readonly maxRecallTokens: number;
@@ -128,6 +129,10 @@ function resolveConfig(pluginConfig: Record<string, unknown>): PluginConfig {
     userId: (pluginConfig.userId as string) ?? process.env.MIMIR_USER_ID ?? "",
     groupId:
       (pluginConfig.groupId as string) ?? process.env.MIMIR_GROUP_ID ?? "",
+    displayName:
+      (pluginConfig.displayName as string) ??
+      process.env.MIMIR_DISPLAY_NAME ??
+      "",
     autoRecall:
       (pluginConfig.autoRecall as boolean) ??
       process.env.MIMIR_AUTO_RECALL !== "false",
@@ -674,7 +679,12 @@ const memoryMimirPlugin = {
       client
         .me()
         .then((me) => {
-          cfg = { ...rawCfg, userId: me.user_id, groupId: me.group_id };
+          cfg = {
+            ...rawCfg,
+            userId: me.user_id,
+            groupId: me.group_id,
+            displayName: me.display_name || rawCfg.displayName,
+          };
           api.logger.info(
             `memory-mimir: authenticated as ${me.display_name} (user: ${me.user_id}, server: ${rawCfg.mimirUrl})`,
           );
@@ -1275,14 +1285,24 @@ const memoryMimirPlugin = {
           if (!query) return;
 
           const timeRange = extractTimeRange(prompt);
-          const results = await client.search(cfg.userId, query, {
-            groupId: cfg.groupId,
-            topK: 15,
-            retrieveMethod: "rrf",
-            memoryTypes: ["event_log", "entity", "relation"],
-            startTime: timeRange?.start,
-            endTime: timeRange?.end,
-          });
+
+          const RECALL_TIMEOUT_MS = 5_000;
+          const results = await Promise.race([
+            client.search(cfg.userId, query, {
+              groupId: cfg.groupId,
+              topK: 15,
+              retrieveMethod: "rrf",
+              memoryTypes: ["event_log", "entity", "relation"],
+              startTime: timeRange?.start,
+              endTime: timeRange?.end,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error("recall timeout")),
+                RECALL_TIMEOUT_MS,
+              ),
+            ),
+          ]);
 
           if (results.results.length === 0) {
             api.logger.info(
@@ -1350,7 +1370,8 @@ const memoryMimirPlugin = {
               continue;
             allParsed.push({
               role: role as "user" | "assistant",
-              sender_name: role === "user" ? cfg.userId : "assistant",
+              sender_name:
+                role === "user" ? cfg.displayName || cfg.userId : "assistant",
               content,
               hash: hashMsg(role, content),
             });
