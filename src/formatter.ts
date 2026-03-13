@@ -111,6 +111,7 @@ export function formatGraphResults(result: GraphTraverseResult): string {
 /** Format a single result item with a type-specific prefix. */
 function formatItem(item: SearchResultItem): string {
   const data = item.data;
+  let line: string;
 
   switch (item.type) {
     case "episode":
@@ -119,20 +120,23 @@ function formatItem(item: SearchResultItem): string {
       const title = (data.title as string) || "";
       const content = (data.content as string) || "";
       const summary = title || firstLine(content);
-      return `- [${date}] ${truncate(summary, 200)}`;
+      line = `- [${date}] ${truncate(summary, 200)}`;
+      break;
     }
 
     case "event_log": {
       const date = formatDate(data.timestamp as string | undefined);
       const fact = (data.fact as string) || "";
-      return `- [${date}] ${truncate(fact, 200)}`;
+      line = `- [${date}] ${truncate(fact, 200)}`;
+      break;
     }
 
     case "entity": {
       const name = (data.name as string) || "";
       const entityType = (data.entity_type as string) || "";
       const summary = (data.summary as string) || "";
-      return `- [entity] ${name} (${entityType}): ${truncate(summary, 200)}`;
+      line = `- [entity] ${name} (${entityType}): ${truncate(summary, 200)}`;
+      break;
     }
 
     case "relation": {
@@ -142,17 +146,28 @@ function formatItem(item: SearchResultItem): string {
       const targetName = (data.target_entity_name as string) || "";
       const label =
         sourceName && targetName ? `${sourceName} → ${targetName}` : relType;
-      return `- [relation] ${label}: ${truncate(fact, 200)}`;
+      line = `- [relation] ${label}: ${truncate(fact, 200)}`;
+      break;
     }
 
     case "foresight": {
       const content = (data.content as string) || "";
-      return `- [upcoming] ${truncate(content, 150)}`;
+      line = `- [upcoming] ${truncate(content, 150)}`;
+      break;
     }
 
     default:
       return "";
   }
+
+  // Append attachment indicators if present
+  if (item.attachments && item.attachments.length > 0) {
+    const attParts = item.attachments.map((att) => att.file_name);
+    const suffix = ` [files: ${attParts.join(", ")}]`;
+    line += truncate(suffix, 80);
+  }
+
+  return line;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────

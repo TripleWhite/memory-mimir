@@ -1,7 +1,7 @@
 {
   "id": "memory-mimir",
   "name": "memory-mimir",
-  "version": "1.0.0",
+  "version": "3.1.0",
   "description": "Long-term memory for OpenClaw powered by Mimir (graph + vector + BM25)",
   "kind": "memory",
   "entry": "dist/index.js",
@@ -41,13 +41,17 @@
       },
       "maxRecallItems": {
         "type": "number",
-        "default": 8,
+        "default": 12,
         "description": "Maximum number of memory items to inject per conversation"
       },
       "maxRecallTokens": {
         "type": "number",
-        "default": 500,
+        "default": 800,
         "description": "Maximum token budget for injected memories"
+      },
+      "displayName": {
+        "type": "string",
+        "description": "Display name used in captured conversation messages (defaults to userId)"
       }
     }
   }

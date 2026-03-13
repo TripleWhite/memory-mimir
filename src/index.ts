@@ -9,7 +9,6 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { Type } from "@sinclair/typebox";
 import { MimirClient, MimirError } from "./mimir-client.js";
 import { formatSearchResults } from "./formatter.js";
 import { migrate, hasExistingData, hasLocalMemories } from "./migration.js";
@@ -349,6 +348,89 @@ export function extractMessageText(content: unknown): string {
     }
   }
   return parts.filter(Boolean).join("\n");
+}
+
+/** Attachment extracted from message content blocks. */
+interface ExtractedAttachment {
+  fileName: string;
+  mimeType: string;
+  data: Buffer;
+}
+
+/**
+ * Extract image and document attachments from message content blocks.
+ * Handles:
+ * - Direct image blocks (source.type === "base64")
+ * - Direct document blocks (source.type === "base64")
+ * - tool_result blocks containing nested image/document blocks
+ */
+export function extractAttachments(content: unknown): ExtractedAttachment[] {
+  if (!Array.isArray(content)) return [];
+
+  const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // 20 MB per file
+  const MAX_ATTACHMENTS = 20; // cap total per message
+
+  const attachments: ExtractedAttachment[] = [];
+  let imageCount = 0;
+  let docCount = 0;
+
+  function safeExt(mediaType: string, fallback: string): string {
+    const raw = mediaType.split("/")[1] || fallback;
+    return raw.replace(/[^a-z0-9]/gi, "").slice(0, 10) || fallback;
+  }
+
+  function processBlock(block: Record<string, unknown>, depth = 0): void {
+    if (!block || typeof block !== "object") return;
+    if (attachments.length >= MAX_ATTACHMENTS) return;
+    if (depth > 3) return;
+
+    if (block.type === "image") {
+      const source = block.source as Record<string, unknown> | undefined;
+      if (source?.type === "base64" && typeof source.data === "string") {
+        const estimatedBytes = Math.ceil(
+          ((source.data as string).length * 3) / 4,
+        );
+        if (estimatedBytes > MAX_ATTACHMENT_BYTES) return;
+        imageCount++;
+        const mediaType = (source.media_type as string) || "image/png";
+        attachments.push({
+          fileName: `image_${imageCount}.${safeExt(mediaType, "png")}`,
+          mimeType: mediaType,
+          data: Buffer.from(source.data as string, "base64"),
+        });
+      }
+    }
+
+    if (block.type === "document") {
+      const source = block.source as Record<string, unknown> | undefined;
+      if (source?.type === "base64" && typeof source.data === "string") {
+        const estimatedBytes = Math.ceil(
+          ((source.data as string).length * 3) / 4,
+        );
+        if (estimatedBytes > MAX_ATTACHMENT_BYTES) return;
+        docCount++;
+        const mediaType = (source.media_type as string) || "application/pdf";
+        attachments.push({
+          fileName: `document_${docCount}.${safeExt(mediaType, "pdf")}`,
+          mimeType: mediaType,
+          data: Buffer.from(source.data as string, "base64"),
+        });
+      }
+    }
+
+    // Recurse into tool_result content
+    if (block.type === "tool_result" && Array.isArray(block.content)) {
+      for (const nested of block.content as Array<Record<string, unknown>>) {
+        processBlock(nested, depth + 1);
+      }
+    }
+  }
+
+  for (const block of content as Array<Record<string, unknown>>) {
+    processBlock(block, 0);
+  }
+
+  return attachments;
 }
 
 /** Extract searchable topics from user message — pure heuristic, no LLM.
@@ -704,160 +786,10 @@ const memoryMimirPlugin = {
     // Tools
     // ════════════════════════════════════════════════════════
 
-    api.registerTool(
-      {
-        name: "mimir_store",
-        label: "Mimir Store",
-        description:
-          "Store an important fact, preference, or note in long-term memory. " +
-          'Use when the user says "remember this" or shares important information.',
-        parameters: Type.Object({
-          content: Type.String({
-            description: "The fact, preference, or note to remember",
-          }),
-        }),
-        async execute(_toolCallId: string, params: Record<string, unknown>) {
-          const content = params.content as string;
-
-          try {
-            const result = await client.ingestNote(cfg.userId, content, {
-              groupId: cfg.groupId,
-            });
-
-            const text =
-              `Stored in memory. Extracted ${result.EpisodeCount} episode(s), ` +
-              `${result.EntityCount} entity(ies), ${result.RelationCount} relation(s).`;
-            return {
-              content: [{ type: "text", text }],
-              details: {
-                episodes: result.EpisodeCount,
-                entities: result.EntityCount,
-              },
-            };
-          } catch (err) {
-            const msg = err instanceof MimirError ? err.message : String(err);
-            return {
-              content: [
-                { type: "text", text: `Failed to store memory: ${msg}` },
-              ],
-              details: { error: msg },
-            };
-          }
-        },
-      },
-      { name: "mimir_store" },
-    );
-
-    // mimir_forget: removed until server-side deletion API is implemented
-
-    api.registerTool(
-      {
-        name: "mimir_search",
-        label: "Mimir Search",
-        description:
-          "Search long-term memory for specific facts, people, events, or past conversations. " +
-          "Use when the user asks about something from the past, references a person/place/topic, " +
-          "or when auto-recalled memories are insufficient. " +
-          "Tips: use memory_types to narrow results — " +
-          '"event_log" for specific facts/events, "entity" for people/places/things, ' +
-          '"relation" for how entities connect, "episode" for full conversation summaries.',
-        parameters: Type.Object({
-          query: Type.String({
-            description:
-              "Search query — be specific. Use names, dates, keywords from the topic.",
-          }),
-          memory_types: Type.Optional(
-            Type.Array(
-              Type.String({
-                description:
-                  "Filter by type: event_log, entity, relation, episode, raw_doc, foresight",
-              }),
-            ),
-          ),
-          start_time: Type.Optional(
-            Type.String({
-              description:
-                "ISO 8601 start time filter (e.g. 2025-01-01T00:00:00Z)",
-            }),
-          ),
-          end_time: Type.Optional(
-            Type.String({
-              description:
-                "ISO 8601 end time filter (e.g. 2025-12-31T23:59:59Z)",
-            }),
-          ),
-          top_k: Type.Optional(
-            Type.Number({
-              description: "Max results to return (default 10, max 30)",
-            }),
-          ),
-        }),
-        async execute(_toolCallId: string, params: Record<string, unknown>) {
-          const query = (params.query as string)?.trim();
-          if (!query || query.length > 2000) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "Error: query must be 1-2000 characters.",
-                },
-              ],
-              details: { error: "invalid_query" },
-            };
-          }
-
-          const memoryTypes = params.memory_types as string[] | undefined;
-          const startTime = params.start_time as string | undefined;
-          const endTime = params.end_time as string | undefined;
-          const topK = Math.min(
-            Math.max((params.top_k as number) || 10, 1),
-            30,
-          );
-
-          try {
-            const results = await client.search(cfg.userId, query, {
-              groupId: cfg.groupId,
-              retrieveMethod: "full",
-              memoryTypes,
-              topK,
-              startTime,
-              endTime,
-            });
-
-            if (results.results.length === 0) {
-              return {
-                content: [
-                  { type: "text", text: "No matching memories found." },
-                ],
-                details: { count: 0 },
-              };
-            }
-
-            const formatted = formatSearchResults(results, {
-              maxItems: topK,
-              maxChars: 4000,
-            });
-
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Found ${results.results.length} memory item(s):\n\n${formatted}`,
-                },
-              ],
-              details: { count: results.results.length },
-            };
-          } catch (err) {
-            const msg = err instanceof MimirError ? err.message : String(err);
-            return {
-              content: [{ type: "text", text: `Memory search failed: ${msg}` }],
-              details: { error: msg },
-            };
-          }
-        },
-      },
-      { name: "mimir_search" },
-    );
+    // memory_search tool: removed — eval shows auto-recall (full) alone is optimal.
+    // LLM never calls the tool when auto-recall provides context (72% vs 74%).
+    // mimir_store: removed — auto-capture handles storage.
+    // mimir_forget: removed — no server-side deletion API yet.
 
     // ════════════════════════════════════════════════════════
     // CLI Commands
@@ -1284,6 +1216,10 @@ const memoryMimirPlugin = {
             prompt.length > 100 ? extractKeywords(prompt) : prompt.trim();
           if (!query) return;
 
+          api.logger.info(
+            `memory-mimir: recall query="${query.slice(0, 80)}" (prompt ${prompt.length} chars)`,
+          );
+
           const timeRange = extractTimeRange(prompt);
 
           const RECALL_TIMEOUT_MS = 5_000;
@@ -1291,7 +1227,7 @@ const memoryMimirPlugin = {
             client.search(cfg.userId, query, {
               groupId: cfg.groupId,
               topK: 15,
-              retrieveMethod: "rrf",
+              retrieveMethod: "full",
               memoryTypes: ["event_log", "entity", "relation"],
               startTime: timeRange?.start,
               endTime: timeRange?.end,
@@ -1429,6 +1365,60 @@ const memoryMimirPlugin = {
             .catch((err) => {
               api.logger.warn(`memory-mimir: capture failed: ${String(err)}`);
             });
+
+          // Upload attachments from NEW messages only (skip already-processed ones).
+          // We scan raw messages by index — only those after firstNewIdx in allParsed
+          // could contain new attachments. Since messages and allParsed don't have 1:1
+          // mapping, we use content-hash dedup: server deduplicates by content_hash,
+          // but to avoid wasting bandwidth we also track locally.
+          const newAttachments: ExtractedAttachment[] = [];
+          // Only scan raw messages from the latter portion — approximate by skipping
+          // the first firstNewIdx user/assistant messages.
+          let rawSkip = firstNewIdx;
+          for (const msg of messages) {
+            if (!msg || typeof msg !== "object") continue;
+            const role = (msg as Record<string, unknown>).role as string;
+            if (role !== "user" && role !== "assistant") continue;
+            if (rawSkip > 0) {
+              rawSkip--;
+              continue;
+            }
+            const extracted = extractAttachments(
+              (msg as Record<string, unknown>).content,
+            );
+            newAttachments.push(...extracted);
+          }
+
+          if (newAttachments.length > 0) {
+            api.logger.info(
+              `memory-mimir: uploading ${newAttachments.length} attachments`,
+            );
+            Promise.allSettled(
+              newAttachments.map((att) =>
+                client.uploadFile(att.data, att.fileName, att.mimeType, {
+                  groupId: cfg.groupId,
+                  description: "Auto-captured from conversation",
+                }),
+              ),
+            ).then((results) => {
+              const succeeded = results.filter(
+                (r) => r.status === "fulfilled",
+              ).length;
+              const failed = results.filter(
+                (r) => r.status === "rejected",
+              ).length;
+              if (succeeded > 0) {
+                api.logger.info(
+                  `memory-mimir: uploaded ${succeeded}/${newAttachments.length} attachments`,
+                );
+              }
+              if (failed > 0) {
+                api.logger.warn(
+                  `memory-mimir: ${failed}/${newAttachments.length} attachment uploads failed`,
+                );
+              }
+            });
+          }
         } catch (err) {
           api.logger.warn(`memory-mimir: capture setup failed: ${String(err)}`);
         }

@@ -1,6 +1,6 @@
 {
   "name": "memory-mimir",
-  "version": "2.6.2",
+  "version": "3.2.0",
   "description": "Long-term memory for OpenClaw powered by Mimir (graph + vector + BM25)",
   "type": "module",
   "main": "dist/index.js",
@@ -27,7 +27,7 @@
   "license": "MIT",
   "scripts": {
     "build": "tsc",
-    "prepare": "npm run build",
+    "prepublishOnly": "npm run build",
     "test": "node --import tsx src/test.ts"
   },
   "devDependencies": {
@@ -42,8 +42,5 @@
   },
   "engines": {
     "node": ">=18"
-  },
-  "dependencies": {
-    "@sinclair/typebox": "^0.34.48"
   }
 }

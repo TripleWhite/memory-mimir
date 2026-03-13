@@ -87,11 +87,34 @@ export interface SearchResultItem {
   readonly score: number;
   readonly sources: readonly string[];
   readonly data: Record<string, unknown>;
+  readonly attachments?: readonly AttachmentItem[];
+}
+
+export interface AttachmentItem {
+  readonly id: string;
+  readonly file_name: string;
+  readonly mime_type: string;
+  readonly file_size: number;
+  readonly signed_url: string;
+  readonly description: string;
+  readonly created_at: string;
 }
 
 export interface SearchResponse {
   readonly results: readonly SearchResultItem[];
   readonly foresight_context?: string;
+}
+
+// ─── Upload Types ───────────────────────────────────────────
+
+export interface UploadFileResult {
+  readonly id: string;
+  readonly file_name: string;
+  readonly mime_type: string;
+  readonly file_size: number;
+  readonly signed_url: string;
+  readonly description: string;
+  readonly created_at: string;
 }
 
 // ─── Graph Types ─────────────────────────────────────────────
@@ -390,6 +413,75 @@ export class MimirClient {
         total_relations: 0,
       }
     );
+  }
+
+  /** Upload a file to Mimir storage. Returns attachment metadata with signed URL. */
+  async uploadFile(
+    fileData: Uint8Array,
+    fileName: string,
+    mimeType: string,
+    options?: {
+      readonly groupId?: string;
+      readonly description?: string;
+      readonly episodeId?: string;
+    },
+  ): Promise<UploadFileResult> {
+    const url = `${this.config.url}/api/v1/files/upload`;
+    const controller = new AbortController();
+    const uploadTimeoutMs = Math.max(this.config.timeoutMs, 120_000); // min 2 min for large files
+    const timeout = setTimeout(() => controller.abort(), uploadTimeoutMs);
+
+    try {
+      const form = new FormData();
+      form.append(
+        "file",
+        new Blob([fileData as BlobPart], { type: mimeType }),
+        fileName,
+      );
+      if (options?.groupId) form.append("group_id", options.groupId);
+      if (options?.description) form.append("description", options.description);
+      if (options?.episodeId) form.append("episode_id", options.episodeId);
+
+      const headers: Record<string, string> = {};
+      if (this.config.apiKey) {
+        headers["Authorization"] = `Bearer ${this.config.apiKey}`;
+      }
+      // Do NOT set Content-Type — let fetch set multipart boundary automatically
+
+      const resp = await fetch(url, {
+        method: "POST",
+        headers,
+        body: form,
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new MimirError(
+          `POST /api/v1/files/upload failed: ${resp.status} ${body}`,
+          resp.status,
+        );
+      }
+
+      const json = (await resp.json()) as APIResponse<UploadFileResult>;
+      if (json.status === "error") {
+        throw new MimirError(`POST /api/v1/files/upload: ${json.error}`, 500);
+      }
+
+      return (
+        json.result ?? {
+          id: "",
+          file_name: "",
+          mime_type: "",
+          file_size: 0,
+          signed_url: "",
+          description: "",
+          created_at: "",
+        }
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   // ─── HTTP Helpers ────────────────────────────────────────

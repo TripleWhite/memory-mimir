@@ -4,6 +4,7 @@
  */
 
 import { formatSearchResults, formatGraphResults } from "./formatter.js";
+import { extractAttachments } from "./index.js";
 import { extractDateFromFilename } from "./migration-helpers.js";
 import type { SearchResponse, GraphTraverseResult } from "./mimir-client.js";
 
@@ -256,6 +257,245 @@ console.log("\n=== Keyword Extraction Tests ===\n");
   const result2 = testExtract("What is Sarah's job?");
   assert(result2.includes("sarah's"), "extracts name with possessive");
   assert(result2.includes("job"), "extracts 'job'");
+}
+
+// ─── extractAttachments Tests ────────────────────────────────
+
+console.log("\n=== extractAttachments Tests ===\n");
+
+// Helper to build a base64 image block
+function makeImageBlock(
+  b64: string,
+  mediaType = "image/png",
+): Record<string, unknown> {
+  return {
+    type: "image",
+    source: { type: "base64", data: b64, media_type: mediaType },
+  };
+}
+
+// Helper to build a base64 document block
+function makeDocBlock(
+  b64: string,
+  mediaType = "application/pdf",
+): Record<string, unknown> {
+  return {
+    type: "document",
+    source: { type: "base64", data: b64, media_type: mediaType },
+  };
+}
+
+const smallB64 = Buffer.from("test").toString("base64"); // "dGVzdA=="
+
+// 1. Empty/invalid input
+{
+  const empty = extractAttachments([]);
+  assertEqual(empty.length, 0, "empty array → 0 attachments");
+
+  const fromNull = extractAttachments(null);
+  assertEqual(fromNull.length, 0, "null → 0 attachments");
+}
+
+// 2. Single image extraction
+{
+  const result = extractAttachments([makeImageBlock(smallB64, "image/png")]);
+  assertEqual(result.length, 1, "single image → 1 attachment");
+  assertEqual(
+    result[0].fileName,
+    "image_1.png",
+    "image fileName is image_1.png",
+  );
+  assertEqual(result[0].mimeType, "image/png", "image mimeType is image/png");
+  assertEqual(
+    result[0].data.toString(),
+    "test",
+    "image data decodes to 'test'",
+  );
+}
+
+// 3. Single document extraction
+{
+  const result = extractAttachments([
+    makeDocBlock(smallB64, "application/pdf"),
+  ]);
+  assertEqual(result.length, 1, "single document → 1 attachment");
+  assertEqual(
+    result[0].fileName,
+    "document_1.pdf",
+    "doc fileName is document_1.pdf",
+  );
+  assertEqual(
+    result[0].mimeType,
+    "application/pdf",
+    "doc mimeType is application/pdf",
+  );
+}
+
+// 4. Mixed content — image + text + document → extracts only 2 attachments
+{
+  const content = [
+    makeImageBlock(smallB64),
+    { type: "text", text: "hello world" },
+    makeDocBlock(smallB64),
+  ];
+  const result = extractAttachments(content);
+  assertEqual(result.length, 2, "mixed content → 2 attachments (text skipped)");
+  assertEqual(result[0].fileName, "image_1.png", "first is image");
+  assertEqual(result[1].fileName, "document_1.pdf", "second is document");
+}
+
+// 5. tool_result recursion — nested image inside tool_result
+{
+  const content = [
+    {
+      type: "tool_result",
+      content: [makeImageBlock(smallB64, "image/jpeg")],
+    },
+  ];
+  const result = extractAttachments(content);
+  assertEqual(result.length, 1, "tool_result recursion → 1 attachment");
+  assertEqual(
+    result[0].mimeType,
+    "image/jpeg",
+    "nested image mimeType correct",
+  );
+}
+
+// 6. Depth limit — 4 levels deep nesting → stops at depth 3
+{
+  const content = [
+    {
+      type: "tool_result",
+      content: [
+        {
+          type: "tool_result",
+          content: [
+            {
+              type: "tool_result",
+              content: [
+                {
+                  type: "tool_result",
+                  content: [makeImageBlock(smallB64)],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+  const result = extractAttachments(content);
+  // depth 0 → depth 1 → depth 2 → depth 3 (processBlock enters with depth=3,
+  // sees tool_result at depth=3, recursion depth+1=4 > 3 so stops)
+  // Actually: top-level calls processBlock(block, 0). depth=0 tool_result → recurse depth=1
+  // depth=1 tool_result → recurse depth=2, depth=2 tool_result → recurse depth=3
+  // depth=3 tool_result → tries to recurse depth=4 but `depth > 3` check blocks it.
+  // Wait, depth=3 enters processBlock, check `depth > 3` → false (3 is not > 3).
+  // So at depth=3, it's a tool_result, tries to recurse nested at depth=4.
+  // depth=4 enters processBlock, check `depth > 3` → true, returns immediately.
+  // So the image at depth 4 is NOT extracted.
+  assertEqual(result.length, 0, "depth 4 nesting → blocked (depth limit 3)");
+}
+
+// 7. MAX_ATTACHMENTS cap — 21 image blocks → only 20 extracted
+{
+  const blocks = [];
+  for (let i = 0; i < 21; i++) {
+    blocks.push(makeImageBlock(smallB64));
+  }
+  const result = extractAttachments(blocks);
+  assertEqual(result.length, 20, "21 images → capped at 20");
+}
+
+// 8. Large file skip — base64 data > ~27MB (decodes to >20MB) → skipped
+{
+  // 20MB = 20 * 1024 * 1024 = 20971520 bytes
+  // base64 length = ceil(bytes * 4/3) ≈ 27962027
+  // We need estimatedBytes = ceil(len * 3/4) > 20MB
+  // So len > 20971520 * 4/3 ≈ 27962027
+  const largeB64 = "A".repeat(28_000_000);
+  const result = extractAttachments([makeImageBlock(largeB64)]);
+  assertEqual(result.length, 0, "large file (>20MB) → skipped");
+}
+
+// 9. Extension sanitization — media_type with special chars
+{
+  const result = extractAttachments([
+    makeImageBlock(smallB64, "image/svg+xml"),
+  ]);
+  assertEqual(result.length, 1, "svg+xml image → 1 attachment");
+  assertEqual(
+    result[0].fileName,
+    "image_1.svgxml",
+    "svg+xml sanitized to svgxml",
+  );
+}
+
+// ─── Formatter Attachment Display Tests ─────────────────────
+
+console.log("\n=== Formatter Attachment Display Tests ===\n");
+
+// 10. Episode with attachments → output includes [files: ...]
+{
+  const response: SearchResponse = {
+    results: [
+      {
+        id: "ep-att-1",
+        type: "episode",
+        score: 0.9,
+        sources: ["bm25"],
+        data: {
+          title: "Photo from vacation",
+          occurred_at: "2023-08-01T00:00:00Z",
+        },
+        attachments: [
+          {
+            id: "a1",
+            file_name: "sunset.jpg",
+            mime_type: "image/jpeg",
+            file_size: 1024,
+            signed_url: "https://example.com/sunset.jpg",
+            description: "A sunset photo",
+            created_at: "2023-08-01T00:00:00Z",
+          },
+          {
+            id: "a2",
+            file_name: "notes.pdf",
+            mime_type: "application/pdf",
+            file_size: 2048,
+            signed_url: "https://example.com/notes.pdf",
+            description: "Meeting notes",
+            created_at: "2023-08-01T00:00:00Z",
+          },
+        ],
+      },
+    ],
+  };
+  const result = formatSearchResults(response);
+  assert(
+    result.includes("[files: sunset.jpg, notes.pdf]"),
+    "episode with attachments shows [files: ...]",
+  );
+}
+
+// 11. No attachments → no [files: ] suffix
+{
+  const response: SearchResponse = {
+    results: [
+      {
+        id: "ep-no-att",
+        type: "episode",
+        score: 0.9,
+        sources: ["bm25"],
+        data: {
+          title: "Regular memory",
+          occurred_at: "2023-08-01T00:00:00Z",
+        },
+      },
+    ],
+  };
+  const result = formatSearchResults(response);
+  assert(!result.includes("[files:"), "no attachments → no [files:] suffix");
 }
 
 // ─── Summary ─────────────────────────────────────────────────
