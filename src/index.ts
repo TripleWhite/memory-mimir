@@ -1080,7 +1080,7 @@ const memoryMimirPlugin = {
               groupId: cfg.groupId,
               topK: 15,
               retrieveMethod: "full",
-              memoryTypes: ["event_log", "entity", "relation"],
+              memoryTypes: ["event_log", "entity", "relation", "foresight"],
               startTime: timeRange?.start,
               endTime: timeRange?.end,
             }),
