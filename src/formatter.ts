@@ -160,11 +160,12 @@ function formatItem(item: SearchResultItem): string {
       return "";
   }
 
-  // Append attachment indicators if present
+  // Append attachment indicators with signed URLs if present
   if (item.attachments && item.attachments.length > 0) {
-    const attParts = item.attachments.map((att) => att.file_name);
-    const suffix = ` [files: ${attParts.join(", ")}]`;
-    line += truncate(suffix, 80);
+    const attParts = item.attachments.map((att) =>
+      att.signed_url ? `${att.file_name}: ${att.signed_url}` : att.file_name,
+    );
+    line += ` [files: ${attParts.join(", ")}]`;
   }
 
   return line;
