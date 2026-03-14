@@ -289,12 +289,27 @@ export function extractAttachments(content: unknown): ExtractedAttachment[] {
       }
     }
 
-    // OpenClaw agent_end: images replaced with text "[media attached: /path (mime/type) | ...]"
-    // Read the local file and extract as attachment.
-    if (block.type === "text" && typeof block.text === "string") {
+    // Recurse into tool_result content
+    if (block.type === "tool_result" && Array.isArray(block.content)) {
+      for (const nested of block.content as Array<Record<string, unknown>>) {
+        processBlock(nested, depth + 1);
+      }
+    }
+  }
+
+  for (const block of content as Array<Record<string, unknown>>) {
+    processBlock(block, 0);
+  }
+
+  // Fallback: if no image/document blocks found, try extracting from
+  // OpenClaw agent_end text references "[media attached: /path (mime) | ...]".
+  // This avoids duplicates when both image blocks and text references exist.
+  if (attachments.length === 0) {
+    for (const block of content as Array<Record<string, unknown>>) {
+      if (block?.type !== "text" || typeof block.text !== "string") continue;
       const mediaPattern = /\[media attached:\s*([^\s(]+)\s*\(([^)]+)\)/g;
       let match: RegExpExecArray | null;
-      while ((match = mediaPattern.exec(block.text)) !== null) {
+      while ((match = mediaPattern.exec(block.text as string)) !== null) {
         if (attachments.length >= MAX_ATTACHMENTS) break;
         const filePath = match[1];
         const mimeType = match[2];
@@ -323,17 +338,6 @@ export function extractAttachments(content: unknown): ExtractedAttachment[] {
         }
       }
     }
-
-    // Recurse into tool_result content
-    if (block.type === "tool_result" && Array.isArray(block.content)) {
-      for (const nested of block.content as Array<Record<string, unknown>>) {
-        processBlock(nested, depth + 1);
-      }
-    }
-  }
-
-  for (const block of content as Array<Record<string, unknown>>) {
-    processBlock(block, 0);
   }
 
   return attachments;

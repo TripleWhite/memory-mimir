@@ -554,6 +554,29 @@ const smallB64 = Buffer.from("test").toString("base64"); // "dGVzdA=="
   fs.unlinkSync(tmpPath2);
 }
 
+// 17. Dedup: image block + text media ref for same image → only image block extracted
+{
+  const tmpPath = "/tmp/mimir-test-dedup.jpg";
+  fs.writeFileSync(tmpPath, Buffer.from("local-file-data"));
+
+  const content = [
+    {
+      type: "text",
+      text: `[media attached: ${tmpPath} (image/jpeg) | ${tmpPath}]描述`,
+    },
+    makeOpenClawImageBlock(smallB64, "image/jpeg"),
+  ];
+  const result = extractAttachments(content);
+  assertEqual(result.length, 1, "image block + text ref → 1 (no duplicate)");
+  assertEqual(
+    result[0].data.toString(),
+    "test",
+    "kept image block data, not local file",
+  );
+
+  fs.unlinkSync(tmpPath);
+}
+
 // ─── Formatter Attachment Display Tests ─────────────────────
 
 console.log("\n=== Formatter Attachment Display Tests ===\n");
