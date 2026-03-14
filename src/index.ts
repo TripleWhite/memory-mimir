@@ -140,11 +140,11 @@ function resolveConfig(pluginConfig: Record<string, unknown>): PluginConfig {
       process.env.MIMIR_AUTO_CAPTURE !== "false",
     maxRecallTokens: parsePositiveInt(
       pluginConfig.maxRecallTokens as number | undefined,
-      800,
+      2500,
     ),
     maxRecallItems: parsePositiveInt(
       pluginConfig.maxRecallItems as number | undefined,
-      12,
+      25,
     ),
   };
 }

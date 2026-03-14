@@ -41,12 +41,12 @@
       },
       "maxRecallItems": {
         "type": "number",
-        "default": 12,
+        "default": 25,
         "description": "Maximum number of memory items to inject per conversation"
       },
       "maxRecallTokens": {
         "type": "number",
-        "default": 800,
+        "default": 2500,
         "description": "Maximum token budget for injected memories"
       },
       "displayName": {

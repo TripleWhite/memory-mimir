@@ -59,8 +59,8 @@ In your OpenClaw plugin config:
   "groupId": "your-group-id",
   "autoRecall": true,
   "autoCapture": true,
-  "maxRecallItems": 8,
-  "maxRecallTokens": 2000
+  "maxRecallItems": 25,
+  "maxRecallTokens": 2500
 }
 ```
 
@@ -71,8 +71,8 @@ In your OpenClaw plugin config:
 | `groupId` | string | — | Group ID for memory scoping |
 | `autoRecall` | boolean | `true` | Inject memories before each turn |
 | `autoCapture` | boolean | `true` | Capture conversations after each turn |
-| `maxRecallItems` | number | `12` | Max memory items per recall |
-| `maxRecallTokens` | number | `800` | Max token budget for memory context |
+| `maxRecallItems` | number | `25` | Max memory items per recall |
+| `maxRecallTokens` | number | `2500` | Max token budget for memory context |
 | `displayName` | string | — | Display name in captured messages (defaults to userId) |
 
 ## Architecture

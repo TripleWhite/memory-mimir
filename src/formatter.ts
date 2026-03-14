@@ -14,15 +14,15 @@ import type {
 // ─── Configuration ───────────────────────────────────────────
 
 export interface FormatterOptions {
-  /** Max characters for the entire formatted block. ~500 tokens ≈ 2000 chars. */
+  /** Max characters for the entire formatted block. */
   readonly maxChars: number;
   /** Max individual memory items to show. */
   readonly maxItems: number;
 }
 
 const DEFAULT_OPTIONS: FormatterOptions = {
-  maxChars: 3000,
-  maxItems: 12,
+  maxChars: 10000,
+  maxItems: 25,
 };
 
 // ─── Main Formatter ──────────────────────────────────────────
@@ -120,14 +120,14 @@ function formatItem(item: SearchResultItem): string {
       const title = (data.title as string) || "";
       const content = (data.content as string) || "";
       const summary = title || firstLine(content);
-      line = `- [${date}] ${truncate(summary, 200)}`;
+      line = `- [${date}] ${truncate(summary, 400)}`;
       break;
     }
 
     case "event_log": {
       const date = formatDate(data.timestamp as string | undefined);
       const fact = (data.fact as string) || "";
-      line = `- [${date}] ${truncate(fact, 200)}`;
+      line = `- [${date}] ${truncate(fact, 400)}`;
       break;
     }
 
@@ -135,7 +135,7 @@ function formatItem(item: SearchResultItem): string {
       const name = (data.name as string) || "";
       const entityType = (data.entity_type as string) || "";
       const summary = (data.summary as string) || "";
-      line = `- [entity] ${name} (${entityType}): ${truncate(summary, 200)}`;
+      line = `- [entity] ${name} (${entityType}): ${truncate(summary, 400)}`;
       break;
     }
 
@@ -146,13 +146,13 @@ function formatItem(item: SearchResultItem): string {
       const targetName = (data.target_entity_name as string) || "";
       const label =
         sourceName && targetName ? `${sourceName} → ${targetName}` : relType;
-      line = `- [relation] ${label}: ${truncate(fact, 200)}`;
+      line = `- [relation] ${label}: ${truncate(fact, 400)}`;
       break;
     }
 
     case "foresight": {
       const content = (data.content as string) || "";
-      line = `- [upcoming] ${truncate(content, 150)}`;
+      line = `- [upcoming] ${truncate(content, 400)}`;
       break;
     }
 
