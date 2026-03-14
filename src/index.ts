@@ -296,14 +296,14 @@ export function extractAttachments(content: unknown): ExtractedAttachment[] {
  */
 export function extractKeywords(message: string): string {
   if (hasCJK(message)) {
-    return message.slice(0, 300).trim();
+    return message.slice(0, 1000).trim();
   }
   // Preserve original case, strip punctuation, compress whitespace
   return message
     .replace(/[^\w\s'-]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 300);
+    .slice(0, 1000);
 }
 
 // ─── Time Range Extraction ───────────────────────────────────

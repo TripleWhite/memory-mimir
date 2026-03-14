@@ -129,7 +129,7 @@ console.log("\n=== Formatter Tests ===\n");
 
 // Test: truncation
 {
-  const longContent = "A".repeat(300);
+  const longContent = "A".repeat(1000);
   const response: SearchResponse = {
     results: [
       {
@@ -233,15 +233,15 @@ console.log("\n=== extractKeywords Tests ===\n");
   assert(result1.includes("Calvin"), "preserves 'Calvin' casing");
   assert(result1.includes("coffee"), "keeps 'coffee'");
 
-  // CJK: truncates at 300 chars
-  const cjk = "你好".repeat(200);
+  // CJK: truncates at 1000 chars
+  const cjk = "你好".repeat(600);
   const cjkResult = extractKeywords(cjk);
-  assertEqual(cjkResult.length, 300, "CJK truncated to 300 chars");
+  assertEqual(cjkResult.length, 1000, "CJK truncated to 1000 chars");
 
-  // English: truncates at 300 chars, compresses whitespace
+  // English: truncates at 1000 chars, compresses whitespace
   const long = "word ".repeat(100);
   const longResult = extractKeywords(long);
-  assert(longResult.length <= 300, "English truncated to ≤300 chars");
+  assert(longResult.length <= 1000, "English truncated to ≤1000 chars");
   assert(!longResult.includes("  "), "no double spaces");
 
   // Short message passes through
