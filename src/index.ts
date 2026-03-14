@@ -289,6 +289,41 @@ export function extractAttachments(content: unknown): ExtractedAttachment[] {
       }
     }
 
+    // OpenClaw agent_end: images replaced with text "[media attached: /path (mime/type) | ...]"
+    // Read the local file and extract as attachment.
+    if (block.type === "text" && typeof block.text === "string") {
+      const mediaPattern = /\[media attached:\s*([^\s(]+)\s*\(([^)]+)\)/g;
+      let match: RegExpExecArray | null;
+      while ((match = mediaPattern.exec(block.text)) !== null) {
+        if (attachments.length >= MAX_ATTACHMENTS) break;
+        const filePath = match[1];
+        const mimeType = match[2];
+        try {
+          const stat = fs.statSync(filePath);
+          if (stat.size > MAX_ATTACHMENT_BYTES) continue;
+          const data = fs.readFileSync(filePath);
+          const isImage = mimeType.startsWith("image/");
+          if (isImage) {
+            imageCount++;
+            attachments.push({
+              fileName: `image_${imageCount}.${safeExt(mimeType, "jpg")}`,
+              mimeType,
+              data,
+            });
+          } else {
+            docCount++;
+            attachments.push({
+              fileName: `document_${docCount}.${safeExt(mimeType, "bin")}`,
+              mimeType,
+              data,
+            });
+          }
+        } catch {
+          // File not accessible — skip silently
+        }
+      }
+    }
+
     // Recurse into tool_result content
     if (block.type === "tool_result" && Array.isArray(block.content)) {
       for (const nested of block.content as Array<Record<string, unknown>>) {

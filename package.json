@@ -1,6 +1,6 @@
 {
   "name": "memory-mimir",
-  "version": "3.3.2",
+  "version": "3.3.3",
   "description": "Long-term memory for OpenClaw powered by Mimir (graph + vector + BM25)",
   "type": "module",
   "main": "dist/index.js",

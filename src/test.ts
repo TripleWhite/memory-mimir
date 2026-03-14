@@ -3,6 +3,7 @@
  * Run with: npx tsx src/test.ts
  */
 
+import * as fs from "node:fs";
 import { formatSearchResults, formatGraphResults } from "./formatter.js";
 import { extractAttachments, extractKeywords } from "./index.js";
 import { extractDateFromFilename } from "./migration-helpers.js";
@@ -492,6 +493,65 @@ const smallB64 = Buffer.from("test").toString("base64"); // "dGVzdA=="
   assertEqual(result.length, 2, "mixed Anthropic + OpenClaw → 2 attachments");
   assertEqual(result[0].mimeType, "image/png", "first is Anthropic format");
   assertEqual(result[1].mimeType, "image/jpeg", "second is OpenClaw format");
+}
+
+// 14. OpenClaw agent_end format — [media attached: /path (mime)]
+{
+  // Create a temp file to simulate the local media file
+  const tmpPath = "/tmp/mimir-test-media-extract.jpg";
+  fs.writeFileSync(tmpPath, Buffer.from("fake-jpeg-data"));
+
+  const content = [
+    {
+      type: "text",
+      text: `<memories>some context</memories>\n\n[media attached: ${tmpPath} (image/jpeg) | ${tmpPath}]这是一张测试图片`,
+    },
+  ];
+  const result = extractAttachments(content);
+  assertEqual(result.length, 1, "agent_end media attached → 1 attachment");
+  assertEqual(result[0].mimeType, "image/jpeg", "agent_end mimeType correct");
+  assertEqual(
+    result[0].data.toString(),
+    "fake-jpeg-data",
+    "agent_end file data read correctly",
+  );
+
+  // Cleanup
+  fs.unlinkSync(tmpPath);
+}
+
+// 15. agent_end format — file not found → skip silently
+{
+  const content = [
+    {
+      type: "text",
+      text: "[media attached: /nonexistent/file.jpg (image/jpeg)]",
+    },
+  ];
+  const result = extractAttachments(content);
+  assertEqual(result.length, 0, "missing file → 0 attachments (no error)");
+}
+
+// 16. agent_end format — multiple media in one text block
+{
+  const tmpPath1 = "/tmp/mimir-test-media-1.jpg";
+  const tmpPath2 = "/tmp/mimir-test-media-2.pdf";
+  fs.writeFileSync(tmpPath1, Buffer.from("img1"));
+  fs.writeFileSync(tmpPath2, Buffer.from("doc1"));
+
+  const content = [
+    {
+      type: "text",
+      text: `[media attached: ${tmpPath1} (image/jpeg) | extra]text[media attached: ${tmpPath2} (application/pdf) | extra]more`,
+    },
+  ];
+  const result = extractAttachments(content);
+  assertEqual(result.length, 2, "multiple media in text → 2 attachments");
+  assertEqual(result[0].mimeType, "image/jpeg", "first is image");
+  assertEqual(result[1].mimeType, "application/pdf", "second is document");
+
+  fs.unlinkSync(tmpPath1);
+  fs.unlinkSync(tmpPath2);
 }
 
 // ─── Formatter Attachment Display Tests ─────────────────────
