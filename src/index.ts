@@ -340,6 +340,22 @@ export function extractAttachments(content: unknown): ExtractedAttachment[] {
     }
   }
 
+  // Deduplicate: OpenClaw may send thumbnail + original of the same image
+  // as separate blocks. Remove smaller variants that are likely thumbnails.
+  // Two images are considered variants if same mimeType and smaller is < 85% of larger.
+  if (attachments.length > 1) {
+    // Sort largest first so we keep originals
+    attachments.sort((a, b) => b.data.length - a.data.length);
+    const kept: ExtractedAttachment[] = [];
+    for (const att of attachments) {
+      const isDuplicate = kept.some(
+        (k) =>
+          k.mimeType === att.mimeType && att.data.length < k.data.length * 0.85,
+      );
+      if (!isDuplicate) kept.push(att);
+    }
+    return kept;
+  }
   return attachments;
 }
 

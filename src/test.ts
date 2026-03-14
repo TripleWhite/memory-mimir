@@ -577,6 +577,43 @@ const smallB64 = Buffer.from("test").toString("base64"); // "dGVzdA=="
   fs.unlinkSync(tmpPath);
 }
 
+// 18. Dedup: thumbnail + original (same mimeType, size < 85%) → keep only larger
+{
+  const largeB64 = Buffer.from("A".repeat(1000)).toString("base64");
+  const smallerB64 = Buffer.from("B".repeat(500)).toString("base64"); // ~50% of large
+  const content = [
+    makeOpenClawImageBlock(smallerB64, "image/jpeg"),
+    makeOpenClawImageBlock(largeB64, "image/jpeg"),
+  ];
+  const result = extractAttachments(content);
+  assertEqual(result.length, 1, "thumbnail + original → 1 (deduped)");
+  assert(result[0].data.length > 700, "kept the larger one");
+}
+
+// 19. No dedup: two images with similar size (both > 85%) → keep both
+{
+  const img1B64 = Buffer.from("C".repeat(1000)).toString("base64");
+  const img2B64 = Buffer.from("D".repeat(950)).toString("base64"); // 95% of img1
+  const content = [
+    makeOpenClawImageBlock(img1B64, "image/jpeg"),
+    makeOpenClawImageBlock(img2B64, "image/jpeg"),
+  ];
+  const result = extractAttachments(content);
+  assertEqual(result.length, 2, "two similar-size images → 2 (no dedup)");
+}
+
+// 20. No dedup: different mimeTypes → keep both regardless of size
+{
+  const pngB64 = Buffer.from("E".repeat(1000)).toString("base64");
+  const jpegB64 = Buffer.from("F".repeat(200)).toString("base64");
+  const content = [
+    makeOpenClawImageBlock(pngB64, "image/png"),
+    makeOpenClawImageBlock(jpegB64, "image/jpeg"),
+  ];
+  const result = extractAttachments(content);
+  assertEqual(result.length, 2, "different mimeTypes → 2 (no dedup)");
+}
+
 // ─── Formatter Attachment Display Tests ─────────────────────
 
 console.log("\n=== Formatter Attachment Display Tests ===\n");
