@@ -155,150 +155,7 @@ function parsePositiveInt(value: number | undefined, fallback: number): number {
   return n > 0 ? n : fallback;
 }
 
-// ─── Keyword Extraction (no LLM) ───────────────────────────
-
-const STOP_WORDS = new Set([
-  "the",
-  "a",
-  "an",
-  "is",
-  "are",
-  "was",
-  "were",
-  "be",
-  "been",
-  "being",
-  "have",
-  "has",
-  "had",
-  "do",
-  "does",
-  "did",
-  "will",
-  "would",
-  "could",
-  "should",
-  "may",
-  "might",
-  "can",
-  "shall",
-  "must",
-  "need",
-  "dare",
-  "to",
-  "of",
-  "in",
-  "for",
-  "on",
-  "with",
-  "at",
-  "by",
-  "from",
-  "as",
-  "into",
-  "through",
-  "during",
-  "before",
-  "after",
-  "above",
-  "below",
-  "and",
-  "but",
-  "or",
-  "nor",
-  "not",
-  "so",
-  "yet",
-  "both",
-  "either",
-  "neither",
-  "each",
-  "every",
-  "all",
-  "any",
-  "few",
-  "more",
-  "most",
-  "other",
-  "some",
-  "such",
-  "no",
-  "only",
-  "own",
-  "same",
-  "than",
-  "too",
-  "very",
-  "just",
-  "about",
-  "also",
-  "back",
-  "even",
-  "still",
-  "then",
-  "there",
-  "here",
-  "when",
-  "where",
-  "why",
-  "how",
-  "what",
-  "which",
-  "who",
-  "whom",
-  "this",
-  "that",
-  "these",
-  "those",
-  "it",
-  "its",
-  "i",
-  "me",
-  "my",
-  "we",
-  "our",
-  "you",
-  "your",
-  "he",
-  "she",
-  "him",
-  "her",
-  "they",
-  "them",
-  "their",
-  "if",
-  "up",
-  "out",
-  "please",
-  "tell",
-  "know",
-  "think",
-  "want",
-  "like",
-  "get",
-  "make",
-  "go",
-  "come",
-  "take",
-  "see",
-  "look",
-  "find",
-  "give",
-  "use",
-  "say",
-  "said",
-  "help",
-  "try",
-  "let",
-  "put",
-  "keep",
-  "start",
-  "remember",
-  "recall",
-  "mentioned",
-  "talked",
-  "discussed",
-]);
+// ─── Query Preparation ──────────────────────────────────────
 
 /** Detect CJK characters in text. */
 function hasCJK(text: string): boolean {
@@ -433,24 +290,20 @@ export function extractAttachments(content: unknown): ExtractedAttachment[] {
   return attachments;
 }
 
-/** Extract searchable topics from user message — pure heuristic, no LLM.
- *  For CJK text: pass first 200 chars directly (server has LLMTranslator + RuleAnalyzer).
- *  For English: extract up to 8 non-stop-word tokens.
+/** Prepare query for server-side search — truncate only, no keyword extraction.
+ *  Server's BM25 (IDF), vector embedding, and graph traverse handle the rest.
+ *  Preserves original casing for entity name matching in graph traverse.
  */
 export function extractKeywords(message: string): string {
-  // CJK: pass raw text to server — it handles segmentation and translation
   if (hasCJK(message)) {
-    return message.slice(0, 200).trim();
+    return message.slice(0, 300).trim();
   }
-
-  const words = message
-    .toLowerCase()
+  // Preserve original case, strip punctuation, compress whitespace
+  return message
     .replace(/[^\w\s'-]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
-
-  const unique = [...new Set(words)].slice(0, 8);
-  return unique.join(" ");
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
 }
 
 // ─── Time Range Extraction ───────────────────────────────────
@@ -1212,8 +1065,7 @@ const memoryMimirPlugin = {
         if (!prompt || prompt.length < 5) return;
 
         try {
-          const query =
-            prompt.length > 100 ? extractKeywords(prompt) : prompt.trim();
+          const query = extractKeywords(prompt);
           if (!query) return;
 
           api.logger.info(

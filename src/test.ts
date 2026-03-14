@@ -4,7 +4,7 @@
  */
 
 import { formatSearchResults, formatGraphResults } from "./formatter.js";
-import { extractAttachments } from "./index.js";
+import { extractAttachments, extractKeywords } from "./index.js";
 import { extractDateFromFilename } from "./migration-helpers.js";
 import type { SearchResponse, GraphTraverseResult } from "./mimir-client.js";
 
@@ -221,42 +221,36 @@ console.log("\n=== Date Extraction Tests ===\n");
   );
 }
 
-// ─── Keyword Extraction Tests ────────────────────────────────
+// ─── extractKeywords Tests ───────────────────────────────────
 
-console.log("\n=== Keyword Extraction Tests ===\n");
-
-// Import via dynamic import to test the extractKeywords function
-// Since it's not exported, we test indirectly through the index module
-// For now, test the concept:
+console.log("\n=== extractKeywords Tests ===\n");
 
 {
-  // Simple keyword extraction test
-  const stopWords = new Set([
-    "the",
-    "a",
-    "is",
-    "do",
-    "you",
-    "remember",
-    "what",
-  ]);
-  const testExtract = (msg: string) => {
-    return msg
-      .toLowerCase()
-      .replace(/[^\w\s'-]/g, " ")
-      .split(/\s+/)
-      .filter((w) => w.length > 2 && !stopWords.has(w))
-      .slice(0, 5)
-      .join(" ");
-  };
+  // Preserves original case for entity matching
+  const result1 = extractKeywords(
+    "Do you remember what Calvin said about coffee?",
+  );
+  assert(result1.includes("Calvin"), "preserves 'Calvin' casing");
+  assert(result1.includes("coffee"), "keeps 'coffee'");
 
-  const result1 = testExtract("Do you remember what Calvin said about coffee?");
-  assert(result1.includes("calvin"), "extracts 'calvin' from question");
-  assert(result1.includes("coffee"), "extracts 'coffee' from question");
+  // CJK: truncates at 300 chars
+  const cjk = "你好".repeat(200);
+  const cjkResult = extractKeywords(cjk);
+  assertEqual(cjkResult.length, 300, "CJK truncated to 300 chars");
 
-  const result2 = testExtract("What is Sarah's job?");
-  assert(result2.includes("sarah's"), "extracts name with possessive");
-  assert(result2.includes("job"), "extracts 'job'");
+  // English: truncates at 300 chars, compresses whitespace
+  const long = "word ".repeat(100);
+  const longResult = extractKeywords(long);
+  assert(longResult.length <= 300, "English truncated to ≤300 chars");
+  assert(!longResult.includes("  "), "no double spaces");
+
+  // Short message passes through
+  const short = extractKeywords("Sarah's job");
+  assert(short.includes("Sarah's"), "preserves possessive with case");
+  assert(short.includes("job"), "keeps 'job'");
+
+  // Empty / whitespace
+  assertEqual(extractKeywords("   "), "", "whitespace-only → empty");
 }
 
 // ─── extractAttachments Tests ────────────────────────────────
