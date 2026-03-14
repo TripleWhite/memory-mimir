@@ -268,6 +268,22 @@ function makeImageBlock(
   };
 }
 
+// Helper to build an OpenClaw-format image block (flat data + mimeType)
+function makeOpenClawImageBlock(
+  b64: string,
+  mimeType = "image/jpeg",
+): Record<string, unknown> {
+  return { type: "image", data: b64, mimeType };
+}
+
+// Helper to build an OpenClaw-format document block
+function makeOpenClawDocBlock(
+  b64: string,
+  mimeType = "application/pdf",
+): Record<string, unknown> {
+  return { type: "document", data: b64, mimeType };
+}
+
 // Helper to build a base64 document block
 function makeDocBlock(
   b64: string,
@@ -425,6 +441,59 @@ const smallB64 = Buffer.from("test").toString("base64"); // "dGVzdA=="
   );
 }
 
+// 10. OpenClaw format — flat data + mimeType (image)
+{
+  const result = extractAttachments([
+    makeOpenClawImageBlock(smallB64, "image/jpeg"),
+  ]);
+  assertEqual(result.length, 1, "OpenClaw image → 1 attachment");
+  assertEqual(
+    result[0].mimeType,
+    "image/jpeg",
+    "OpenClaw image mimeType correct",
+  );
+  assertEqual(
+    result[0].data.toString(),
+    "test",
+    "OpenClaw image data decodes correctly",
+  );
+}
+
+// 11. OpenClaw format — flat data + mimeType (document)
+{
+  const result = extractAttachments([
+    makeOpenClawDocBlock(smallB64, "application/pdf"),
+  ]);
+  assertEqual(result.length, 1, "OpenClaw doc → 1 attachment");
+  assertEqual(
+    result[0].mimeType,
+    "application/pdf",
+    "OpenClaw doc mimeType correct",
+  );
+}
+
+// 12. OpenClaw mixed — image + text
+{
+  const content = [
+    makeOpenClawImageBlock(smallB64),
+    { type: "text", text: "描述这张图片" },
+  ];
+  const result = extractAttachments(content);
+  assertEqual(result.length, 1, "OpenClaw mixed → 1 attachment (text skipped)");
+}
+
+// 13. Mixed formats — Anthropic + OpenClaw in same array
+{
+  const content = [
+    makeImageBlock(smallB64, "image/png"),
+    makeOpenClawImageBlock(smallB64, "image/jpeg"),
+  ];
+  const result = extractAttachments(content);
+  assertEqual(result.length, 2, "mixed Anthropic + OpenClaw → 2 attachments");
+  assertEqual(result[0].mimeType, "image/png", "first is Anthropic format");
+  assertEqual(result[1].mimeType, "image/jpeg", "second is OpenClaw format");
+}
+
 // ─── Formatter Attachment Display Tests ─────────────────────
 
 console.log("\n=== Formatter Attachment Display Tests ===\n");
@@ -467,8 +536,10 @@ console.log("\n=== Formatter Attachment Display Tests ===\n");
   };
   const result = formatSearchResults(response);
   assert(
-    result.includes("[files: sunset.jpg, notes.pdf]"),
-    "episode with attachments shows [files: ...]",
+    result.includes(
+      "[files: sunset.jpg: https://example.com/sunset.jpg, notes.pdf: https://example.com/notes.pdf]",
+    ),
+    "episode with attachments shows [files: name: url, ...]",
   );
 }
 

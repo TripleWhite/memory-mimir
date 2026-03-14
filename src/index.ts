@@ -242,35 +242,49 @@ export function extractAttachments(content: unknown): ExtractedAttachment[] {
     if (depth > 3) return;
 
     if (block.type === "image") {
+      // Anthropic API format: { type: "image", source: { type: "base64", data, media_type } }
       const source = block.source as Record<string, unknown> | undefined;
-      if (source?.type === "base64" && typeof source.data === "string") {
-        const estimatedBytes = Math.ceil(
-          ((source.data as string).length * 3) / 4,
-        );
+      // OpenClaw format: { type: "image", data: "base64...", mimeType: "image/jpeg" }
+      const rawData = (source?.type === "base64" ? source.data : block.data) as
+        | string
+        | undefined;
+      const mediaType =
+        (source?.media_type as string) ||
+        (block.mimeType as string) ||
+        "image/png";
+
+      if (typeof rawData === "string" && rawData.length > 0) {
+        const estimatedBytes = Math.ceil((rawData.length * 3) / 4);
         if (estimatedBytes > MAX_ATTACHMENT_BYTES) return;
         imageCount++;
-        const mediaType = (source.media_type as string) || "image/png";
         attachments.push({
           fileName: `image_${imageCount}.${safeExt(mediaType, "png")}`,
           mimeType: mediaType,
-          data: Buffer.from(source.data as string, "base64"),
+          data: Buffer.from(rawData, "base64"),
         });
       }
     }
 
     if (block.type === "document") {
+      // Anthropic API format: { type: "document", source: { type: "base64", data, media_type } }
       const source = block.source as Record<string, unknown> | undefined;
-      if (source?.type === "base64" && typeof source.data === "string") {
-        const estimatedBytes = Math.ceil(
-          ((source.data as string).length * 3) / 4,
-        );
+      // OpenClaw format: { type: "document", data: "base64...", mimeType: "application/pdf" }
+      const rawData = (source?.type === "base64" ? source.data : block.data) as
+        | string
+        | undefined;
+      const mediaType =
+        (source?.media_type as string) ||
+        (block.mimeType as string) ||
+        "application/pdf";
+
+      if (typeof rawData === "string" && rawData.length > 0) {
+        const estimatedBytes = Math.ceil((rawData.length * 3) / 4);
         if (estimatedBytes > MAX_ATTACHMENT_BYTES) return;
         docCount++;
-        const mediaType = (source.media_type as string) || "application/pdf";
         attachments.push({
           fileName: `document_${docCount}.${safeExt(mediaType, "pdf")}`,
           mimeType: mediaType,
-          data: Buffer.from(source.data as string, "base64"),
+          data: Buffer.from(rawData, "base64"),
         });
       }
     }
