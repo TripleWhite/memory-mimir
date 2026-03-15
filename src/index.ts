@@ -18,6 +18,8 @@ import { migrate, hasExistingData, hasLocalMemories } from "./migration.js";
 interface CaptureState {
   /** SHA-256 hashes (truncated to 16 hex chars) of already-ingested messages. */
   ingestedHashes: string[];
+  /** Timestamps of messages whose attachments have already been processed. */
+  processedAttTimestamps?: string[];
 }
 
 const CAPTURE_STATE_DIR = path.join(os.homedir(), ".openclaw");
@@ -31,12 +33,16 @@ function loadCaptureState(): CaptureState {
     const data = fs.readFileSync(CAPTURE_STATE_FILE, "utf8");
     const parsed = JSON.parse(data);
     if (Array.isArray(parsed.ingestedHashes)) {
-      return { ingestedHashes: parsed.ingestedHashes as string[] };
+      return {
+        ingestedHashes: parsed.ingestedHashes as string[],
+        processedAttTimestamps:
+          (parsed.processedAttTimestamps as string[] | undefined) ?? [],
+      };
     }
   } catch {
     // File doesn't exist or is corrupt — start fresh.
   }
-  return { ingestedHashes: [] };
+  return { ingestedHashes: [], processedAttTimestamps: [] };
 }
 
 function saveCaptureState(state: CaptureState): void {
@@ -1193,6 +1199,9 @@ const memoryMimirPlugin = {
       const CONTEXT_WINDOW = 4; // preceding (already-ingested) messages for LLM context
       const savedState = loadCaptureState();
       const ingestedHashes = new Set<string>(savedState.ingestedHashes);
+      const processedAttTs = new Set<string>(
+        savedState.processedAttTimestamps ?? [],
+      );
 
       api.on("agent_end", async (event) => {
         const messages = event.messages as
@@ -1206,6 +1215,7 @@ const memoryMimirPlugin = {
             sender_name: string;
             content: string;
             hash: string;
+            timestamp?: string;
           }> = [];
 
           for (const msg of messages) {
@@ -1231,88 +1241,42 @@ const memoryMimirPlugin = {
                 role === "user" ? cfg.displayName || cfg.userId : "assistant",
               content,
               hash: hashMsg(role, content),
+              timestamp: msg.timestamp as string | undefined,
             });
           }
 
-          if (allParsed.length === 0) return;
-
-          api.logger.info(
-            `memory-mimir: session-end parsed=${allParsed.length}`,
-          );
-
-          // Find the first new (not yet ingested) message.
-          const firstNewIdx = allParsed.findIndex(
-            (m) => !ingestedHashes.has(m.hash),
-          );
-          if (firstNewIdx === -1) return; // all already ingested
-
-          // Include CONTEXT_WINDOW already-ingested messages for LLM context.
-          const contextStart = Math.max(0, firstNewIdx - CONTEXT_WINDOW);
-          const toSend = allParsed.slice(contextStart);
-          const newCount = allParsed.length - firstNewIdx;
-
-          // Mark only the new messages as ingested.
-          for (let i = firstNewIdx; i < allParsed.length; i++) {
-            ingestedHashes.add(allParsed[i].hash);
-          }
-          // Cap stored hashes to prevent unbounded growth — keep most recent.
-          const MAX_HASHES = 5000;
-          const hashArr = [...ingestedHashes];
-          const trimmed =
-            hashArr.length > MAX_HASHES
-              ? hashArr.slice(hashArr.length - MAX_HASHES)
-              : hashArr;
-          saveCaptureState({ ingestedHashes: trimmed });
-
-          api.logger.info(
-            `memory-mimir: capturing ${newCount} new messages (+${toSend.length - newCount} context)`,
-          );
-
-          client
-            .ingestSession(
-              cfg.userId,
-              toSend.map(({ role, sender_name, content }) => ({
-                role,
-                sender_name,
-                content,
-              })),
-              { groupId: cfg.groupId },
-            )
-            .then(() => {
-              api.logger.info(
-                `memory-mimir: captured ${toSend.length} messages`,
-              );
-            })
-            .catch((err) => {
-              api.logger.warn(`memory-mimir: capture failed: ${String(err)}`);
-            });
-
-          // Upload attachments from NEW messages only (skip already-processed ones).
-          // We scan raw messages by index — only those after firstNewIdx in allParsed
-          // could contain new attachments. Since messages and allParsed don't have 1:1
-          // mapping, we use content-hash dedup: server deduplicates by content_hash,
-          // but to avoid wasting bandwidth we also track locally.
+          // ── Attachment scan (runs independently of text ingest) ──
+          // Uses message timestamp as stable identity to skip already-processed
+          // messages. Immune to image re-encoding across agent_end calls.
           const newAttachments: ExtractedAttachment[] = [];
-          // Only scan raw messages from the latter portion — approximate by skipping
-          // the first firstNewIdx user/assistant messages.
-          let rawSkip = firstNewIdx;
+          let attSkipped = 0;
           for (const msg of messages) {
             if (!msg || typeof msg !== "object") continue;
             const role = (msg as Record<string, unknown>).role as string;
             if (role !== "user" && role !== "assistant") continue;
-            if (rawSkip > 0) {
-              rawSkip--;
+            const ts = (msg as Record<string, unknown>).timestamp as
+              | string
+              | undefined;
+            if (ts && processedAttTs.has(ts)) {
+              attSkipped++;
               continue;
             }
             const extracted = extractAttachments(
               (msg as Record<string, unknown>).content,
             );
+            // Mark as processed regardless of whether it had attachments,
+            // so we never re-scan this message.
+            if (ts) processedAttTs.add(ts);
             newAttachments.push(...extracted);
           }
 
+          api.logger.info(
+            `memory-mimir: att scan: ${attSkipped} skipped, ${newAttachments.length} new`,
+          );
+
           if (newAttachments.length > 0) {
             api.logger.info(
-              `memory-mimir: uploading ${newAttachments.length} attachments`,
+              `memory-mimir: uploading ${newAttachments.length} new attachments`,
             );
             Promise.allSettled(
               newAttachments.map((att) =>
@@ -1340,6 +1304,87 @@ const memoryMimirPlugin = {
               }
             });
           }
+
+          // ── Text ingest ──
+          if (allParsed.length === 0) {
+            saveCaptureState({
+              ingestedHashes: [...ingestedHashes],
+              processedAttTimestamps: [...processedAttTs].slice(-5000),
+            });
+            return;
+          }
+
+          api.logger.info(
+            `memory-mimir: session-end parsed=${allParsed.length}`,
+          );
+
+          // Find the first new (not yet ingested) message.
+          const firstNewIdx = allParsed.findIndex(
+            (m) => !ingestedHashes.has(m.hash),
+          );
+          if (firstNewIdx === -1) {
+            saveCaptureState({
+              ingestedHashes: [...ingestedHashes],
+              processedAttTimestamps: [...processedAttTs].slice(-5000),
+            });
+            return; // all already ingested
+          }
+
+          // Include CONTEXT_WINDOW already-ingested messages for LLM context.
+          const contextStart = Math.max(0, firstNewIdx - CONTEXT_WINDOW);
+          const toSend = allParsed.slice(contextStart);
+          const newCount = allParsed.length - firstNewIdx;
+
+          // Mark only the new messages as ingested.
+          for (let i = firstNewIdx; i < allParsed.length; i++) {
+            ingestedHashes.add(allParsed[i].hash);
+          }
+          // Cap stored hashes to prevent unbounded growth — keep most recent.
+          const MAX_HASHES = 5000;
+          const hashArr = [...ingestedHashes];
+          const trimmed =
+            hashArr.length > MAX_HASHES
+              ? hashArr.slice(hashArr.length - MAX_HASHES)
+              : hashArr;
+
+          saveCaptureState({
+            ingestedHashes: trimmed,
+            processedAttTimestamps: [...processedAttTs].slice(-5000),
+          });
+
+          api.logger.info(
+            `memory-mimir: capturing ${newCount} new messages (+${toSend.length - newCount} context)`,
+          );
+
+          // Use the last new message's timestamp as REFERENCE_TIME for the
+          // extraction prompt, so relative times ("last week") resolve correctly.
+          const rawTs = allParsed[allParsed.length - 1]?.timestamp;
+          // Ensure RFC3339 format for the server. OpenClaw may use ISO 8601
+          // (which is compatible) or other formats.
+          let sessionTs: string | undefined;
+          if (rawTs) {
+            const d = new Date(rawTs);
+            sessionTs = isNaN(d.getTime()) ? undefined : d.toISOString();
+          }
+
+          client
+            .ingestSession(
+              cfg.userId,
+              toSend.map(({ role, sender_name, content }) => ({
+                role,
+                sender_name,
+                content,
+              })),
+              { groupId: cfg.groupId, timestamp: sessionTs },
+            )
+            .then(() => {
+              api.logger.info(
+                `memory-mimir: captured ${toSend.length} messages`,
+              );
+            })
+            .catch((err) => {
+              api.logger.warn(`memory-mimir: capture failed: ${String(err)}`);
+            });
         } catch (err) {
           api.logger.warn(`memory-mimir: capture setup failed: ${String(err)}`);
         }
